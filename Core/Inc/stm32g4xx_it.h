@@ -1,4 +1,4 @@
-/* USER CODE BEGIN Header */
+﻿/* USER CODE BEGIN Header */
 /**
   ******************************************************************************
   * @file    stm32g4xx_it.h
@@ -56,9 +56,9 @@ void SVC_Handler(void);
 void DebugMon_Handler(void);
 void PendSV_Handler(void);
 void SysTick_Handler(void);
-/* 外设中断入口：
- * EXTI0 用于 ADS1220 DRDY，
- * TIM6_DAC 用于采样节拍，
+/* 外设中断入口。
+ * EXTI0 用于 ADS1220 DRDY。
+ * TIM6_DAC 用于采样节拍。
  * USB_LP 用于 CDC 设备栈。 */
 void EXTI0_IRQHandler(void);
 void TIM6_DAC_IRQHandler(void);
@@ -72,3 +72,4 @@ void USB_LP_IRQHandler(void);
 #endif
 
 #endif /* __STM32G4xx_IT_H */
+

@@ -1,4 +1,4 @@
-/* USER CODE BEGIN Header */
+﻿/* USER CODE BEGIN Header */
 /**
   ******************************************************************************
   * @file           : main.h
@@ -57,7 +57,7 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-/* ADS1220 数据就绪信号，低有效，接到 EXTI0。 */
+/* ADS1220 数据就绪信号，低有效，接 EXTI0。 */
 #define ADC_DRDY_Pin GPIO_PIN_0
 #define ADC_DRDY_GPIO_Port GPIOB
 /* ADS1220 硬件复位脚。 */
@@ -79,3 +79,4 @@ void Error_Handler(void);
 #endif
 
 #endif /* __MAIN_H */
+

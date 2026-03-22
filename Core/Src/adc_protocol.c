@@ -1,4 +1,4 @@
-#include "adc_protocol.h"
+﻿#include "adc_protocol.h"
 
 #include <string.h>
 
@@ -6,7 +6,7 @@
 
 static SPI_HandleTypeDef *g_spi = NULL;
 /* 保存期望寄存器镜像。
- * COMM_CHECK 阶段通过回读寄存器来确认器件配置没有写偏。 */
+ * COMM_CHECK 阶段通过回读寄存器确认器件配置没有写偏。 */
 static ads1220_config_t g_expected_config = {
   {
     ADS1220_DEFAULT_CONFIG0,
@@ -16,12 +16,29 @@ static ads1220_config_t g_expected_config = {
   }
 };
 
+/* 函数说明：
+ *   控制 ADS1220 片选信号。
+ * 输入：
+ *   state: 片选输出电平。
+ * 输出：
+ *   无。
+ * 作用：
+ *   在 SPI 事务前后切换通信边界。
+ */
 static void adc_protocol_chip_select(GPIO_PinState state)
 {
   HAL_GPIO_WritePin(ADC_CS_GPIO_Port, ADC_CS_Pin, state);
 }
 
-/* 某些命令和读写动作前后插入少量空周期，给 SPI 事务留出边界。 */
+/* 函数说明：
+ *   插入少量空转周期。
+ * 输入：
+ *   cycles: 空转周期数。
+ * 输出：
+ *   无。
+ * 作用：
+ *   在命令或读写动作前后给 SPI 事务留出边界。
+ */
 static void adc_protocol_delay_cycles(uint32_t cycles)
 {
   uint32_t i;
@@ -32,8 +49,18 @@ static void adc_protocol_delay_cycles(uint32_t cycles)
   }
 }
 
-/* 统一的全双工传输封装。
- * ADS1220 的命令、寄存器读写都通过这里发送。 */
+/* 函数说明：
+ *   封装 ADS1220 的基础 SPI 全双工传输。
+ * 输入：
+ *   tx_buf: 发送缓冲区。
+ *   rx_buf: 接收缓冲区。
+ *   size: 传输字节数。
+ * 输出：
+ *   true : 传输成功。
+ *   false: 传输失败。
+ * 作用：
+ *   统一底层 SPI 读写接口。
+ */
 static bool adc_protocol_transfer(const uint8_t *tx_buf, uint8_t *rx_buf, uint16_t size)
 {
   if ((g_spi == NULL) || (size == 0U))
@@ -49,15 +76,34 @@ static bool adc_protocol_transfer(const uint8_t *tx_buf, uint8_t *rx_buf, uint16
   return true;
 }
 
+/* 函数说明：
+ *   初始化协议层。
+ * 输入：
+ *   hspi: SPI 句柄。
+ * 输出：
+ *   无。
+ * 作用：
+ *   绑定 SPI 外设，并设置 ADS1220 的空闲引脚状态。
+ */
 void adc_protocol_init(SPI_HandleTypeDef *hspi)
 {
   g_spi = hspi;
   adc_protocol_chip_select(GPIO_PIN_SET);
-  /* START 和 RST 在空闲时保持低/高，避免上电时误触发。 */
+  /* START 和 RST 在空闲时保持默认电平，避免上电时误触发。 */
   HAL_GPIO_WritePin(ADC_START_GPIO_Port, ADC_START_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(ADC_RST_GPIO_Port, ADC_RST_Pin, GPIO_PIN_SET);
 }
 
+/* 函数说明：
+ *   发送 ADS1220 单字节命令。
+ * 输入：
+ *   command: ADS1220 单字节命令。
+ * 输出：
+ *   true : 命令发送成功。
+ *   false: 命令发送失败。
+ * 作用：
+ *   发送 RESET、START/SYNC、POWERDOWN 等控制命令。
+ */
 bool adc_protocol_send_command(uint8_t command)
 {
   uint8_t rx_dummy = 0U;
@@ -75,6 +121,16 @@ bool adc_protocol_send_command(uint8_t command)
   return true;
 }
 
+/* 函数说明：
+ *   写入 ADS1220 配置寄存器。
+ * 输入：
+ *   config: 目标寄存器配置。
+ * 输出：
+ *   true : 配置写入成功。
+ *   false: 配置写入失败。
+ * 作用：
+ *   通过一条 WREG 命令连续写入 4 个配置寄存器。
+ */
 bool adc_protocol_configure(const ads1220_config_t *config)
 {
   uint8_t tx_buf[1U + ADS1220_REG_COUNT] = {0U};
@@ -106,6 +162,16 @@ bool adc_protocol_configure(const ads1220_config_t *config)
   return true;
 }
 
+/* 函数说明：
+ *   写入工程默认配置。
+ * 输入：
+ *   无。
+ * 输出：
+ *   true : 默认配置写入成功。
+ *   false: 默认配置写入失败。
+ * 作用：
+ *   使用工程内定义的默认寄存器值配置 ADS1220。
+ */
 bool adc_protocol_configure_default(void)
 {
   ads1220_config_t config = {
@@ -120,6 +186,16 @@ bool adc_protocol_configure_default(void)
   return adc_protocol_configure(&config);
 }
 
+/* 函数说明：
+ *   回读 ADS1220 配置寄存器。
+ * 输入：
+ *   config: 配置输出指针。
+ * 输出：
+ *   true : 回读成功。
+ *   false: 回读失败。
+ * 作用：
+ *   读取 ADS1220 的 4 个配置寄存器，用于通信自检或调试。
+ */
 bool adc_protocol_read_config(ads1220_config_t *config)
 {
   uint8_t tx_buf[1U + ADS1220_REG_COUNT] = {0U};
@@ -150,6 +226,15 @@ bool adc_protocol_read_config(ads1220_config_t *config)
   return true;
 }
 
+/* 函数说明：
+ *   复位 ADS1220。
+ * 输入：
+ *   无。
+ * 输出：
+ *   无。
+ * 作用：
+ *   同时通过硬件复位脚和 RESET 命令复位 ADS1220。
+ */
 void adc_protocol_reset(void)
 {
   /* 同时保留硬件 RST 脚和软件 RESET 命令，便于不同阶段复位器件。 */
@@ -161,21 +246,49 @@ void adc_protocol_reset(void)
   HAL_Delay(APP_ADC_RESET_PULSE_MS);
 }
 
+/* 函数说明：
+ *   停止 ADS1220 转换。
+ * 输入：
+ *   无。
+ * 输出：
+ *   无。
+ * 作用：
+ *   停止转换并发送 POWERDOWN 命令，让 ADS1220 进入低功耗态。
+ */
 void adc_protocol_stop(void)
 {
   HAL_GPIO_WritePin(ADC_START_GPIO_Port, ADC_START_Pin, GPIO_PIN_RESET);
   (void)adc_protocol_send_command(ADS1220_CMD_POWERDOWN);
 }
 
+/* 函数说明：
+ *   发起一次 ADS1220 转换。
+ * 输入：
+ *   无。
+ * 输出：
+ *   无。
+ * 作用：
+ *   通过 START 引脚脉冲和 START/SYNC 命令发起一次转换。
+ */
 void adc_protocol_start_conversion(void)
 {
-  /* START 引脚脉冲 + START/SYNC 命令，两者都保留，方便后续裁剪策略。 */
+  /* START 引脚脉冲和 START/SYNC 命令都保留，方便后续裁剪策略。 */
   HAL_GPIO_WritePin(ADC_START_GPIO_Port, ADC_START_Pin, GPIO_PIN_SET);
   adc_protocol_delay_cycles(APP_ADC_START_PULSE_CYCLES);
   HAL_GPIO_WritePin(ADC_START_GPIO_Port, ADC_START_Pin, GPIO_PIN_RESET);
   (void)adc_protocol_send_command(ADS1220_CMD_START_SYNC);
 }
 
+/* 函数说明：
+ *   读取 ADS1220 原始 24 位结果。
+ * 输入：
+ *   data: 3 字节原始数据输出缓冲区。
+ * 输出：
+ *   true : 读取成功。
+ *   false: 读取失败。
+ * 作用：
+ *   在 DRDY 就绪后直接读取 ADS1220 的 24 位原始结果。
+ */
 bool adc_protocol_read_raw24(uint8_t data[ADS1220_DATA_BYTES])
 {
   if ((g_spi == NULL) || (data == NULL))
@@ -183,7 +296,7 @@ bool adc_protocol_read_raw24(uint8_t data[ADS1220_DATA_BYTES])
     return false;
   }
 
-  /* DRDY 已经就绪后，直接读取 3 字节数据，不再额外发 RDATA。 */
+  /* DRDY 已经就绪后，直接读取 3 字节数据，不再额外发送 RDATA。 */
   adc_protocol_chip_select(GPIO_PIN_RESET);
   adc_protocol_delay_cycles(APP_ADC_START_PULSE_CYCLES);
   if (HAL_SPI_Receive(g_spi, data, ADS1220_DATA_BYTES, HAL_MAX_DELAY) != HAL_OK)
@@ -197,6 +310,15 @@ bool adc_protocol_read_raw24(uint8_t data[ADS1220_DATA_BYTES])
   return true;
 }
 
+/* 函数说明：
+ *   解析 24 位原始 ADC 数据。
+ * 输入：
+ *   data: 3 字节原始 ADC 数据。
+ * 输出：
+ *   返回 32 位有符号码值。
+ * 作用：
+ *   对 ADS1220 的 24 位补码结果做符号扩展，转换为 MCU 易处理的整数。
+ */
 int32_t adc_protocol_parse_raw24(const uint8_t data[ADS1220_DATA_BYTES])
 {
   int32_t code;
@@ -214,6 +336,17 @@ int32_t adc_protocol_parse_raw24(const uint8_t data[ADS1220_DATA_BYTES])
   return code;
 }
 
+/* 函数说明：
+ *   将 ADC 码值换算为输入差分电压。
+ * 输入：
+ *   code: ADC 码值。
+ *   vref: 参考电压。
+ *   gain: PGA 增益。
+ * 输出：
+ *   返回输入差分电压。
+ * 作用：
+ *   按 ADS1220 的满量程关系把码值换算为电压。
+ */
 float adc_protocol_code_to_voltage(int32_t code, float vref, float gain)
 {
   if (gain == 0.0f)
@@ -224,6 +357,16 @@ float adc_protocol_code_to_voltage(int32_t code, float vref, float gain)
   return ((float)code) * ((2.0f * vref) / gain) / 16777216.0f;
 }
 
+/* 函数说明：
+ *   读取一帧并直接返回有符号原始码值。
+ * 输入：
+ *   raw_code: 原始码值输出指针。
+ * 输出：
+ *   true : 读数成功。
+ *   false: 读数失败。
+ * 作用：
+ *   对上层提供“一次读回有符号原始码”的简化接口。
+ */
 bool adc_protocol_read_sample(int32_t *raw_code)
 {
   uint8_t data[ADS1220_DATA_BYTES] = {0U};
@@ -238,6 +381,16 @@ bool adc_protocol_read_sample(int32_t *raw_code)
   return true;
 }
 
+/* 函数说明：
+ *   执行 ADS1220 通信链路自检。
+ * 输入：
+ *   raw_code: 当前样本码值，当前实现未直接使用。
+ * 输出：
+ *   true : 通信与配置校验通过。
+ *   false: 校验失败。
+ * 作用：
+ *   回读寄存器并与期望配置比较，作为 ADS1220 通信自检依据。
+ */
 bool adc_protocol_link_check(int32_t raw_code)
 {
   ads1220_config_t config;
@@ -253,3 +406,4 @@ bool adc_protocol_link_check(int32_t raw_code)
 
   return (memcmp(&config, &g_expected_config, sizeof(config)) == 0);
 }
+

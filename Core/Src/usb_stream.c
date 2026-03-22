@@ -1,11 +1,11 @@
-#include "usb_stream.h"
+﻿#include "usb_stream.h"
 
 #include <string.h>
 
 #include "app_config.h"
 #include "usbd_cdc_if.h"
 
-/* FS 模式单包 64 字节，因此这里每次最多拼 2 个 32 字节样本。 */
+/* FS 模式单包 64 字节，因此这里每次最多拼 2 帧 32 字节样本。 */
 #define USB_STREAM_MAX_CHUNK_BYTES (sizeof(sample_packet_t) * 2U)
 
 typedef struct
@@ -20,11 +20,30 @@ typedef struct
 
 static usb_stream_context_t g_usb_stream;
 
+/* 函数说明：
+ *   初始化 USB 发送上下文。
+ * 输入：
+ *   无。
+ * 输出：
+ *   无。
+ * 作用：
+ *   清空环形队列和临时发送缓冲区。
+ */
 void usb_stream_init(void)
 {
   memset(&g_usb_stream, 0, sizeof(g_usb_stream));
 }
 
+/* 函数说明：
+ *   将样本帧写入 USB 环形队列。
+ * 输入：
+ *   pkt: 待发送的样本帧。
+ * 输出：
+ *   true : 成功入队且未发生丢包。
+ *   false: 入队失败或发生了“丢弃最旧帧”的情况。
+ * 作用：
+ *   队列满时优先保留最新数据。
+ */
 bool usb_stream_enqueue(const sample_packet_t *pkt)
 {
   sample_packet_t local_packet;
@@ -53,6 +72,15 @@ bool usb_stream_enqueue(const sample_packet_t *pkt)
   return (dropped_oldest == false);
 }
 
+/* 函数说明：
+ *   推动 USB 队列发送。
+ * 输入：
+ *   无。
+ * 输出：
+ *   无。
+ * 作用：
+ *   尝试把队列头部样本打包后通过 USB CDC 发送出去。
+ */
 void usb_stream_service(void)
 {
   uint32_t packet_count;
@@ -89,3 +117,4 @@ void usb_stream_service(void)
   g_usb_stream.tail = (g_usb_stream.tail + packet_count) % APP_USB_QUEUE_DEPTH;
   g_usb_stream.count -= packet_count;
 }
+

@@ -1,4 +1,4 @@
-#ifndef __USB_STREAM_H
+﻿#ifndef __USB_STREAM_H
 #define __USB_STREAM_H
 
 #ifdef __cplusplus
@@ -28,7 +28,7 @@ typedef struct
 /* 编译期约束，防止结构体被编译器额外填充。 */
 typedef char sample_packet_size_must_be_32[(sizeof(sample_packet_t) == 32U) ? 1 : -1];
 
-/* 初始化USB发送队列。 */
+/* 初始化 USB 发送队列。 */
 void usb_stream_init(void);
 /* 采样结果入队；队列满时丢弃最旧数据。 */
 bool usb_stream_enqueue(const sample_packet_t *pkt);
@@ -40,3 +40,4 @@ void usb_stream_service(void);
 #endif
 
 #endif /* __USB_STREAM_H */
+

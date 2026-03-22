@@ -1,4 +1,4 @@
-#ifndef __APP_CONFIG_H
+﻿#ifndef __APP_CONFIG_H
 #define __APP_CONFIG_H
 
 #ifdef __cplusplus
@@ -45,3 +45,4 @@ extern "C" {
 #endif
 
 #endif /* __APP_CONFIG_H */
+

@@ -1,4 +1,4 @@
-#ifndef __ADC_PROTOCOL_H
+﻿#ifndef __ADC_PROTOCOL_H
 #define __ADC_PROTOCOL_H
 
 #ifdef __cplusplus
@@ -35,7 +35,7 @@ typedef struct
 #define ADS1220_CMD_RREG(addr, count)    (uint8_t)(0x20U | (((uint8_t)(addr) & 0x03U) << 2) | (((uint8_t)(count) - 1U) & 0x03U))
 #define ADS1220_CMD_WREG(addr, count)    (uint8_t)(0x40U | (((uint8_t)(addr) & 0x03U) << 2) | (((uint8_t)(count) - 1U) & 0x03U))
 
-/* 当前工程使用的一套默认启动值，后续可按通道/增益/速率继续细化。 */
+/* 当前工程使用的一套默认启动值，后续可按通道、增益、速率继续细化。 */
 #define ADS1220_DEFAULT_CONFIG0          0x08U
 #define ADS1220_DEFAULT_CONFIG1          0x04U
 #define ADS1220_DEFAULT_CONFIG2          0x10U
@@ -53,7 +53,7 @@ bool adc_protocol_send_command(uint8_t command);
 void adc_protocol_reset(void);
 void adc_protocol_stop(void);
 void adc_protocol_start_conversion(void);
-/* DRDY 就绪后直接读出 3 字节原始码，不额外发送 RDATA。 */
+/* DRDY 就绪后直接读取 3 字节原始码，不额外发送 RDATA。 */
 bool adc_protocol_read_raw24(uint8_t data[ADS1220_DATA_BYTES]);
 /* 24 位二进制补码扩展为 32 位有符号整数。 */
 int32_t adc_protocol_parse_raw24(const uint8_t data[ADS1220_DATA_BYTES]);
@@ -67,3 +67,4 @@ bool adc_protocol_link_check(int32_t raw_code);
 #endif
 
 #endif /* __ADC_PROTOCOL_H */
+
