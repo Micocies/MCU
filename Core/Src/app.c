@@ -76,30 +76,30 @@ extern TIM_HandleTypeDef htim6;
 /* 状态机内部还要区分“当前样本是用于自检、校准还是正常运行”。 */
 typedef enum
 {
-  APP_PIPELINE_COMM_CHECK = 0,
-  APP_PIPELINE_CALIBRATION,
-  APP_PIPELINE_RUN
+  APP_PIPELINE_COMM_CHECK = 0,  //自检
+  APP_PIPELINE_CALIBRATION,     //校准
+  APP_PIPELINE_RUN              //正常运行
 } app_pipeline_mode_t;
 
 typedef struct
 {
-  volatile uint8_t evt_sample_tick;
-  volatile uint8_t evt_drdy;
-  app_state_t state;
-  app_pipeline_mode_t pipeline_mode;
-  uint32_t state_enter_ms;
-  uint32_t drdy_deadline_ms;
-  uint32_t last_fault_report_ms;
-  uint32_t sequence;
-  uint32_t calibration_count;
-  int64_t calibration_accumulator;
-  int32_t raw_code;
-  int32_t filtered_code;
-  int32_t baseline_code;
-  int32_t corrected_code;
-  uint16_t fault_flags;
-  uint8_t filter_valid;
-} app_context_t;
+  volatile uint8_t evt_sample_tick; // TIM6 采样节拍事件
+  volatile uint8_t evt_drdy;        // ADS1220 DRDY 事件
+  app_state_t state;                // 当前状态
+  app_pipeline_mode_t pipeline_mode;// 当前样本所属的流水线阶段
+  uint32_t state_enter_ms;          // 进入当前状态的时间戳，单位 ms
+  uint32_t drdy_deadline_ms;        // 等待 DRDY 的截止时间戳，单位 ms
+  uint32_t last_fault_report_ms;    // 上次故障帧发送的时间戳，单位 ms
+  uint32_t sequence;                // 样本序列号，单调递增
+  uint32_t calibration_count;       // 已累积的校准样本数量
+  int64_t calibration_accumulator;  // 校准样本累加器，用于求暗态基线
+  int32_t raw_code;                 // 当前原始 ADC 码值
+  int32_t filtered_code;            // 当前滤波结果
+  int32_t baseline_code;            // 当前基线值（暗态均值）
+  int32_t corrected_code;           // 当前扣除基线后的码值
+  uint16_t fault_flags;             // 当前故障标志位，按位定义见 SAMPLE_FLAG_XXX
+  uint8_t filter_valid;             // 滤波器是否已初始化
+} app_context_t;                    // 应用状态机上下文
 
 static app_context_t g_app;
 
@@ -164,9 +164,9 @@ static uint32_t app_get_timestamp_us(void)
  */
 static void app_enable_cycle_counter(void)
 {
-  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-  DWT->CYCCNT = 0U;
-  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk; // 使能 DWT 访问权限
+  DWT->CYCCNT = 0U;                               // 复位周期计数器    
+  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;            // 使能周期计数器
 }
 
 /* 函数说明：
@@ -256,7 +256,7 @@ static int32_t app_filter_raw_code(int32_t raw_code)
   }
   else
   {
-    g_app.filtered_code += (raw_code - g_app.filtered_code) / (int32_t)(1UL << APP_FILTER_ALPHA_SHIFT);
+    g_app.filtered_code += (raw_code - g_app.filtered_code) / (int32_t)(1UL << APP_FILTER_ALPHA_SHIFT);// APP_FILTER_ALPHA_SHIFT 定义了滤波器的平滑程度，值越大响应越慢但噪声越小。
   }
 
   return g_app.filtered_code;
@@ -275,16 +275,16 @@ static int32_t app_filter_raw_code(int32_t raw_code)
 static void app_build_packet(sample_packet_t *pkt, uint16_t flags)
 {
   memset(pkt, 0, sizeof(*pkt));
-  pkt->magic = SAMPLE_PACKET_MAGIC;
-  pkt->version = SAMPLE_PACKET_VERSION;
-  pkt->state = (uint8_t)g_app.state;
-  pkt->flags = flags;
-  pkt->sequence = g_app.sequence++;
-  pkt->timestamp_us = app_get_timestamp_us();
-  pkt->raw_code = g_app.raw_code;
-  pkt->filtered_code = g_app.filtered_code;
-  pkt->baseline_code = g_app.baseline_code;
-  pkt->corrected_code = g_app.corrected_code;
+  pkt->magic = SAMPLE_PACKET_MAGIC;       // 固定包头，便于上位机识别帧边界
+  pkt->version = SAMPLE_PACKET_VERSION;   // 包格式版本，便于后续升级兼容
+  pkt->state = (uint8_t)g_app.state;      // 当前状态机状态，便于上位机了解采样上下文 
+  pkt->flags = flags;                     // 当前样本的状态标志，按位定义见 SAMPLE_FLAG_XXX
+  pkt->sequence = g_app.sequence++;       // 样本序列号，单调递增，便于上位机检测丢包和乱序
+  pkt->timestamp_us = app_get_timestamp_us(); // 当前时间戳，单位 us
+  pkt->raw_code = g_app.raw_code;         // 当前原始 ADC 码值
+  pkt->filtered_code = g_app.filtered_code; // 当前滤波结果
+  pkt->baseline_code = g_app.baseline_code; // 当前基线值（暗态均值）
+  pkt->corrected_code = g_app.corrected_code; // 当前扣除基线后的码值
 }
 
 /* 函数说明：
@@ -322,10 +322,10 @@ static void app_handle_fault_reporting(void)
 void app_init(void)
 {
   memset(&g_app, 0, sizeof(g_app));
-  app_enable_cycle_counter();
-  usb_stream_init();
-  adc_protocol_init(&hspi1);
-  app_set_state(APP_STATE_INIT);
+  app_enable_cycle_counter();   // 启用 DWT 周期计数器以支持微秒级时间戳
+  usb_stream_init();            // 初始化 USB 发送队列
+  adc_protocol_init(&hspi1);    // 初始化 ADS1220 驱动，传入 SPI 句柄以供后续通信
+  app_set_state(APP_STATE_INIT);// 设置初始状态，等待主循环调度
 }
 
 /* 函数说明：
@@ -339,7 +339,7 @@ void app_init(void)
  */
 void app_run_once(void)
 {
-  sample_packet_t pkt;
+  sample_packet_t pkt;  // 用于构造和发送 USB 数据包的临时变量
 
   /* 主循环每次都顺带推动 USB 发送，避免队列长期堆积。 */
   usb_stream_service();
@@ -349,48 +349,48 @@ void app_run_once(void)
     case APP_STATE_INIT:
       /* 软件侧的真正启动入口。
        * 复位 ADC、写默认寄存器、启动 DAC 偏置。 */
-      app_stop_timer();
-      HAL_GPIO_WritePin(ADC_CS_GPIO_Port, ADC_CS_Pin, GPIO_PIN_SET);
-      adc_protocol_reset();
-      if (!adc_protocol_configure_default())
+      app_stop_timer();       // 确保 TIM6 不会在配置过程中触发采样事件
+      HAL_GPIO_WritePin(ADC_CS_GPIO_Port, ADC_CS_Pin, GPIO_PIN_SET);    // 确保 SPI CS 初始为非选中状态
+      adc_protocol_reset();   // 通过 GPIO 复位 ADS1220，确保其进入已知状态
+      if (!adc_protocol_configure_default())// 通过 SPI 写入默认寄存器配置，并验证回读
       {
-        app_enter_fault(SAMPLE_FLAG_COMM_CHECK_FAILED);
+        app_enter_fault(SAMPLE_FLAG_COMM_CHECK_FAILED); // 配置失败直接进入故障状态
         break;
       }
-      if (HAL_DAC_Start(&hdac1, DAC_CHANNEL_1) != HAL_OK)
+      if (HAL_DAC_Start(&hdac1, DAC_CHANNEL_1) != HAL_OK)// 启动 DAC 输出通道1，提供模拟前端偏置电压
       {
-        app_enter_fault(SAMPLE_FLAG_FAULT_STATE);
+        app_enter_fault(SAMPLE_FLAG_FAULT_STATE);        // 启动失败直接进入故障状态
         break;
       }
-      if (HAL_DAC_Start(&hdac1, DAC_CHANNEL_2) != HAL_OK)
+      if (HAL_DAC_Start(&hdac1, DAC_CHANNEL_2) != HAL_OK)// 启动 DAC 输出通道2，提供模拟前端偏置电压
       {
-        app_enter_fault(SAMPLE_FLAG_FAULT_STATE);
+        app_enter_fault(SAMPLE_FLAG_FAULT_STATE);        // 启动失败直接进入故障状态
         break;
       }
-      if (HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, APP_DAC_BIAS_CH1) != HAL_OK)
-      {
-        app_enter_fault(SAMPLE_FLAG_FAULT_STATE);
-        break;
-      }
-      if (HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_2, DAC_ALIGN_12B_R, APP_DAC_BIAS_CH2) != HAL_OK)
+      if (HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, APP_DAC_BIAS_CH1) != HAL_OK)   // 设置 DAC 通道1 输出值，调整偏置电压VREF/2
       {
         app_enter_fault(SAMPLE_FLAG_FAULT_STATE);
         break;
       }
-      app_set_state(APP_STATE_BIAS_STABILIZE);
+      if (HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_2, DAC_ALIGN_12B_R, APP_DAC_BIAS_CH2) != HAL_OK)   // 设置 DAC 通道2 输出值，调整偏置电压VREF/2
+      {
+        app_enter_fault(SAMPLE_FLAG_FAULT_STATE);
+        break;
+      }
+      app_set_state(APP_STATE_BIAS_STABILIZE);    // 进入偏置稳定等待阶段，等待模拟前端和 DAC 输出稳定
       break;
 
     case APP_STATE_BIAS_STABILIZE:
       /* 等待模拟前端与偏置稳定，不做采样。 */
-      if (app_has_elapsed(g_app.state_enter_ms, APP_BIAS_STABILIZE_MS))
+      if (app_has_elapsed(g_app.state_enter_ms, APP_BIAS_STABILIZE_MS))   // 稳定时间到达，进入通信自检阶段
       {
-        app_set_state(APP_STATE_COMM_CHECK);
+        app_set_state(APP_STATE_COMM_CHECK);      // 进入通信自检阶段，验证 SPI 和 DRDY 链路
       }
       break;
 
     case APP_STATE_COMM_CHECK:
       /* 只做一次试采样，用来验证 SPI、DRDY 和寄存器配置链路。 */
-      app_begin_conversion(APP_PIPELINE_COMM_CHECK);
+      app_begin_conversion(APP_PIPELINE_COMM_CHECK);  // 进入等待 DRDY 的状态，发起一次转换，后续流程和正常采样一致，但会根据结果决定进入校准还是故障状态
       break;
 
     case APP_STATE_DARK_CALIBRATE:
@@ -403,7 +403,7 @@ void app_run_once(void)
       g_app.corrected_code = 0;
       g_app.fault_flags = 0U;
       app_start_timer();
-      app_set_state(APP_STATE_WAIT_TRIGGER);
+      app_set_state(APP_STATE_WAIT_TRIGGER);    // 进入正常采样等待阶段，等待 TIM6 触发采样节拍
       break;
 
     case APP_STATE_WAIT_TRIGGER:
@@ -411,7 +411,7 @@ void app_run_once(void)
       if (g_app.evt_sample_tick != 0U)
       {
         g_app.evt_sample_tick = 0U;
-        app_begin_conversion(g_app.pipeline_mode);
+        app_begin_conversion(g_app.pipeline_mode);  // 进入等待 DRDY 的状态，发起一次转换，流水线模式由当前阶段决定（自检、校准或运行）
       }
       break;
 
@@ -420,12 +420,12 @@ void app_run_once(void)
       if (g_app.evt_drdy != 0U)
       {
         g_app.evt_drdy = 0U;
-        app_set_state(APP_STATE_READ_SAMPLE);
+        app_set_state(APP_STATE_READ_SAMPLE); // 进入读数阶段，SPI 读取样本数据，后续流程根据当前流水线模式决定进入校准、运行还是故障状态
       }
-      else if ((int32_t)(HAL_GetTick() - g_app.drdy_deadline_ms) >= 0)
+      else if ((int32_t)(HAL_GetTick() - g_app.drdy_deadline_ms) >= 0) // 等待 DRDY 超时，进入故障状态。通信自检阶段的超时也算通信链路失败。
       {
         app_enter_fault(SAMPLE_FLAG_DRDY_TIMEOUT |
-                        ((g_app.pipeline_mode == APP_PIPELINE_COMM_CHECK) ? SAMPLE_FLAG_COMM_CHECK_FAILED : 0U));
+                        ((g_app.pipeline_mode == APP_PIPELINE_COMM_CHECK) ? SAMPLE_FLAG_COMM_CHECK_FAILED : 0U)); // 超时直接进入故障状态，自检阶段的超时还要标记通信自检失败，以便上位机区分是通信问题还是后续处理问题
       }
       break;
 
