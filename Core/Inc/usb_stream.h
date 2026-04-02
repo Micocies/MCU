@@ -28,10 +28,17 @@ typedef struct
 /* 编译期约束，防止结构体被编译器额外填充。 */
 typedef char sample_packet_size_must_be_32[(sizeof(sample_packet_t) == 32U) ? 1 : -1];
 
+typedef enum
+{
+  USB_STREAM_ENQUEUE_OK = 0,
+  USB_STREAM_ENQUEUE_OK_DROPPED_OLDEST,
+  USB_STREAM_ENQUEUE_ERR_INVALID_ARG
+} usb_stream_enqueue_result_t;
+
 /* 初始化 USB 发送队列。 */
 void usb_stream_init(void);
-/* 采样结果入队；队列满时丢弃最旧数据。 */
-bool usb_stream_enqueue(const sample_packet_t *pkt);
+/* 采样结果入队；当前实现仅支持单一主循环上下文访问。 */
+usb_stream_enqueue_result_t usb_stream_enqueue(const sample_packet_t *pkt);
 /* 尝试把队列头部数据送往 USB CDC。 */
 void usb_stream_service(void);
 

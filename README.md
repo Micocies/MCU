@@ -46,6 +46,237 @@
 - `APP_STATE_FAULT`
   停止采样，周期性发送故障状态帧
 
+## 状态转换流程
+
+下面这一节描述的不是“状态定义”，而是 `Core/Src/app.c` 中真实执行的状态跳转关系。
+
+### 1. 上电启动阶段
+
+启动后，`app_init()` 先把上下文清零、初始化 USB 发送队列、绑定 ADS1220 驱动，并把状态设置为 `APP_STATE_INIT`。
+
+随后主循环进入以下启动链路：
+
+`APP_STATE_INIT -> APP_STATE_BIAS_STABILIZE -> APP_STATE_COMM_CHECK`
+
+各状态的进入和退出条件如下：
+
+- `APP_STATE_INIT`
+  - 进入条件：`app_init()` 完成后作为初始状态进入
+  - 执行动作：
+    - 停止 `TIM6`
+    - 拉高 `ADC_CS`
+    - 复位 ADS1220
+    - 写入 ADS1220 默认寄存器
+    - 启动 DAC 两路偏置并写入默认偏置值
+  - 正常退出：
+    - 全部初始化成功后进入 `APP_STATE_BIAS_STABILIZE`
+  - 异常退出：
+    - 任一 ADC 配置失败或 DAC 启动失败，进入 `APP_STATE_FAULT`
+
+- `APP_STATE_BIAS_STABILIZE`
+  - 进入条件：`APP_STATE_INIT` 成功完成
+  - 执行动作：
+    - 不做采样，只等待模拟前端和 DAC 偏置稳定
+  - 正常退出：
+    - 等待时间达到 `APP_BIAS_STABILIZE_MS` 后进入 `APP_STATE_COMM_CHECK`
+  - 异常退出：
+    - 本状态本身没有主动错误分支
+
+- `APP_STATE_COMM_CHECK`
+  - 进入条件：偏置稳定等待完成
+  - 执行动作：
+    - 调用 `app_begin_conversion(APP_PIPELINE_COMM_CHECK)`
+    - 发起一次试采样
+    - 切换到 `APP_STATE_WAIT_DRDY`
+  - 作用：
+    - 用和正常采样相同的链路验证 `START -> DRDY -> SPI 读数 -> 寄存器回读校验` 是否完整可用
+
+### 2. 通信自检阶段
+
+通信自检不是一个单独的“读完就结束”的状态，而是借用正常采样链路跑一遍：
+
+`APP_STATE_COMM_CHECK -> APP_STATE_WAIT_DRDY -> APP_STATE_READ_SAMPLE -> APP_STATE_PROCESS_SAMPLE`
+
+此时 `pipeline_mode = APP_PIPELINE_COMM_CHECK`，因此 `APP_STATE_PROCESS_SAMPLE` 会走“自检分支”。
+
+- `APP_STATE_WAIT_DRDY`
+  - 进入条件：
+    - 来自 `APP_STATE_COMM_CHECK`
+    - 或来自后续运行阶段的 `APP_STATE_WAIT_TRIGGER`
+  - 执行动作：
+    - 等待 `DRDY` 中断把 `evt_drdy` 置位
+  - 正常退出：
+    - 收到 `DRDY` 后进入 `APP_STATE_READ_SAMPLE`
+  - 异常退出：
+    - 若超出 `APP_DRDY_TIMEOUT_MS` 仍未等到 `DRDY`，进入 `APP_STATE_FAULT`
+    - 如果当前是通信自检模式，还会额外打上 `SAMPLE_FLAG_COMM_CHECK_FAILED`
+
+- `APP_STATE_READ_SAMPLE`
+  - 进入条件：`DRDY` 已到来
+  - 执行动作：
+    - 在主循环中调用 `adc_protocol_read_sample()` 读取 ADS1220 原始 24 位结果
+  - 正常退出：
+    - SPI 读数成功后进入 `APP_STATE_PROCESS_SAMPLE`
+  - 异常退出：
+    - SPI 读数失败则进入 `APP_STATE_FAULT`
+    - 如果当前是通信自检模式，还会额外打上 `SAMPLE_FLAG_COMM_CHECK_FAILED`
+
+- `APP_STATE_PROCESS_SAMPLE`
+  - 进入条件：已经得到一帧原始码值
+  - 执行动作：
+    - 先统一执行一次 `app_filter_raw_code()`
+    - 然后根据 `pipeline_mode` 决定后续跳转
+  - 自检分支：
+    - 调用 `adc_protocol_link_check()` 回读 ADS1220 配置寄存器
+    - 如果回读结果和期望寄存器镜像一致，说明通信链路正常，进入 `APP_STATE_DARK_CALIBRATE`
+    - 如果回读失败或不一致，进入 `APP_STATE_FAULT`
+
+因此，自检阶段的结论很明确：
+
+- 自检成功：
+  `APP_STATE_PROCESS_SAMPLE -> APP_STATE_DARK_CALIBRATE`
+- 自检失败：
+  `APP_STATE_PROCESS_SAMPLE -> APP_STATE_FAULT`
+
+### 3. 暗态校准阶段
+
+暗态校准由 `APP_STATE_DARK_CALIBRATE` 启动，但真正的样本累计是在后续 `WAIT_TRIGGER -> WAIT_DRDY -> READ_SAMPLE -> PROCESS_SAMPLE` 这一循环里完成。
+
+主链路如下：
+
+`APP_STATE_DARK_CALIBRATE -> APP_STATE_WAIT_TRIGGER -> APP_STATE_WAIT_DRDY -> APP_STATE_READ_SAMPLE -> APP_STATE_PROCESS_SAMPLE -> APP_STATE_WAIT_TRIGGER`
+
+- `APP_STATE_DARK_CALIBRATE`
+  - 进入条件：通信自检成功
+  - 执行动作：
+    - 设置 `pipeline_mode = APP_PIPELINE_CALIBRATION`
+    - 清空校准累加器、样本计数、滤波器历史和基线值
+    - 启动 `TIM6`
+  - 正常退出：
+    - 进入 `APP_STATE_WAIT_TRIGGER`
+
+- `APP_STATE_WAIT_TRIGGER`
+  - 进入条件：
+    - 来自 `APP_STATE_DARK_CALIBRATE`
+    - 或来自校准/运行阶段一次样本处理结束后
+  - 执行动作：
+    - 等待 `TIM6` 中断置位 `evt_sample_tick`
+  - 正常退出：
+    - 收到采样节拍后调用 `app_begin_conversion(g_app.pipeline_mode)`，进入 `APP_STATE_WAIT_DRDY`
+
+- `APP_STATE_PROCESS_SAMPLE` 在校准模式下的分支：
+  - 把 `filtered_code` 累加到 `calibration_accumulator`
+  - `calibration_count++`
+  - 如果 `calibration_count < APP_DARK_CALIBRATION_SAMPLES`
+    - 返回 `APP_STATE_WAIT_TRIGGER`
+    - 继续采集下一帧校准样本
+  - 如果 `calibration_count >= APP_DARK_CALIBRATION_SAMPLES`
+    - 计算平均值得到 `baseline_code`
+    - 清空滤波器有效标志，避免运行态继承校准阶段滤波历史
+    - 把 `pipeline_mode` 切换为 `APP_PIPELINE_RUN`
+    - 再返回 `APP_STATE_WAIT_TRIGGER`
+
+这里有一个实现细节需要特别说明：
+
+- 校准完成后，并不会经过一个单独的“校准完成状态”
+- 而是通过把 `pipeline_mode` 从 `APP_PIPELINE_CALIBRATION` 改成 `APP_PIPELINE_RUN`
+- 让下一次 `APP_STATE_WAIT_TRIGGER` 开始的采样自动进入正常运行流程
+
+### 4. 正常采样运行阶段
+
+校准完成后的稳定循环如下：
+
+`APP_STATE_WAIT_TRIGGER -> APP_STATE_WAIT_DRDY -> APP_STATE_READ_SAMPLE -> APP_STATE_PROCESS_SAMPLE -> APP_STATE_USB_FLUSH -> APP_STATE_WAIT_TRIGGER`
+
+这就是设备长期运行时最核心的闭环。
+
+- `APP_STATE_WAIT_TRIGGER`
+  - 等待 `TIM6` 周期节拍
+  - 节拍到来后启动一次 ADS1220 转换
+
+- `APP_STATE_WAIT_DRDY`
+  - 等待 ADS1220 转换完成
+  - `DRDY` 到来则进入读数
+  - 超时则进入故障
+
+- `APP_STATE_READ_SAMPLE`
+  - 读取 24 位原始码值
+  - 成功后进入处理
+  - 失败则进入故障
+
+- `APP_STATE_PROCESS_SAMPLE`
+  - 对原始值做 IIR 滤波
+  - 用 `baseline_code` 做基线扣除，得到 `corrected_code`
+  - 然后进入 `APP_STATE_USB_FLUSH`
+
+- `APP_STATE_USB_FLUSH`
+  - 调用 `app_build_packet()` 打包 32 字节样本帧
+  - 通过 `usb_stream_enqueue()` 压入 USB 发送队列
+  - 随后回到 `APP_STATE_WAIT_TRIGGER`
+
+因此，正常运行阶段可以概括为：
+
+- `TIM6` 决定“何时开始一次采样”
+- `DRDY` 决定“何时可以读取这一帧结果”
+- 主循环负责“读数、处理、打包、排队发送”
+
+### 5. 故障阶段
+
+任意阶段只要发现关键错误，都会统一调用 `app_enter_fault()` 进入 `APP_STATE_FAULT`。
+
+当前实现中的故障来源主要包括：
+
+- `APP_STATE_INIT` 中 ADC 或 DAC 初始化失败
+- `APP_STATE_WAIT_DRDY` 中等待 `DRDY` 超时
+- `APP_STATE_READ_SAMPLE` 中 SPI 读数失败
+- `APP_STATE_PROCESS_SAMPLE` 中通信自检失败
+- `switch` 落入默认分支
+
+`app_enter_fault()` 会做以下动作：
+
+- 记录故障标志位
+- 停止 `TIM6`
+- 调用 `adc_protocol_stop()` 停止 ADS1220 转换
+- 清空 `evt_sample_tick` 和 `evt_drdy`
+- 设置 `last_fault_report_ms`
+- 切换状态到 `APP_STATE_FAULT`
+
+进入 `APP_STATE_FAULT` 后：
+
+- 不再恢复到采样状态
+- 只通过 `app_handle_fault_reporting()` 周期性构造故障帧
+- 故障帧继续通过 `usb_stream_enqueue()` 进入 USB 队列
+
+也就是说，当前版本的故障态是“锁定式故障态”：
+
+- 会保留故障信息
+- 会周期性上报
+- 不会自动重试恢复
+
+### 6. 一张简化的跳转图
+
+把以上流程压缩后，可以得到一张更接近代码行为的跳转图：
+
+`INIT -> BIAS_STABILIZE -> COMM_CHECK -> WAIT_DRDY -> READ_SAMPLE -> PROCESS_SAMPLE`
+
+从 `PROCESS_SAMPLE` 分三路：
+
+- 自检成功：`PROCESS_SAMPLE -> DARK_CALIBRATE`
+- 自检失败：`PROCESS_SAMPLE -> FAULT`
+- 非自检模式：按 `pipeline_mode` 进入校准或运行闭环
+
+校准闭环：
+
+`DARK_CALIBRATE -> WAIT_TRIGGER -> WAIT_DRDY -> READ_SAMPLE -> PROCESS_SAMPLE -> WAIT_TRIGGER`
+
+运行闭环：
+
+`WAIT_TRIGGER -> WAIT_DRDY -> READ_SAMPLE -> PROCESS_SAMPLE -> USB_FLUSH -> WAIT_TRIGGER`
+
+异常收口：
+
+- `INIT / WAIT_DRDY / READ_SAMPLE / PROCESS_SAMPLE / default -> FAULT`
+
 ## ADS1220 接口约定
 
 当前工程按以下协议实现：

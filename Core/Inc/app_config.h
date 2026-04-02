@@ -28,6 +28,8 @@ extern "C" {
 #define APP_ADC_FRAME_BYTES               3U
 #define APP_ADC_RESET_PULSE_MS            1U
 #define APP_ADC_START_PULSE_CYCLES        64U
+#define APP_ADC_SPI_TIMEOUT_INIT_MS       20U
+#define APP_ADC_SPI_TIMEOUT_RUN_MS        5U
 
 /* USB 二进制帧包头和状态位定义。 */
 #define SAMPLE_PACKET_MAGIC               0xA55AU
@@ -45,4 +47,3 @@ extern "C" {
 #endif
 
 #endif /* __APP_CONFIG_H */
-

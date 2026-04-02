@@ -10,7 +10,8 @@
 
 typedef struct
 {
-  /* 生产者是采样状态机，消费者是 usb_stream_service()。 */
+  /* 当前默认前提：
+   * 生产者和消费者都在主循环上下文里访问，不支持 ISR 并发访问。 */
   sample_packet_t queue[APP_USB_QUEUE_DEPTH];
   uint8_t tx_buffer[USB_STREAM_MAX_CHUNK_BYTES];
   uint32_t head;
@@ -39,19 +40,18 @@ void usb_stream_init(void)
  * 输入：
  *   pkt: 待发送的样本帧。
  * 输出：
- *   true : 成功入队且未发生丢包。
- *   false: 入队失败或发生了“丢弃最旧帧”的情况。
+ *   返回 USB 入队结果码。
  * 作用：
  *   队列满时优先保留最新数据。
  */
-bool usb_stream_enqueue(const sample_packet_t *pkt)
+usb_stream_enqueue_result_t usb_stream_enqueue(const sample_packet_t *pkt)
 {
   sample_packet_t local_packet;
   bool dropped_oldest = false;
 
   if (pkt == NULL)
   {
-    return false;
+    return USB_STREAM_ENQUEUE_ERR_INVALID_ARG;
   }
 
   local_packet = *pkt;
@@ -69,7 +69,7 @@ bool usb_stream_enqueue(const sample_packet_t *pkt)
   g_usb_stream.head = (g_usb_stream.head + 1U) % APP_USB_QUEUE_DEPTH;
   g_usb_stream.count++;
 
-  return (dropped_oldest == false);
+  return (dropped_oldest == false) ? USB_STREAM_ENQUEUE_OK : USB_STREAM_ENQUEUE_OK_DROPPED_OLDEST;
 }
 
 /* 函数说明：

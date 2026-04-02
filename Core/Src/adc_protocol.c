@@ -50,30 +50,55 @@ static void adc_protocol_delay_cycles(uint32_t cycles)
 }
 
 /* 函数说明：
+ *   将 HAL SPI 返回值映射为协议层状态码。
+ * 输入：
+ *   hal_status: HAL SPI 返回值。
+ * 输出：
+ *   协议层状态码。
+ * 作用：
+ *   区分超时和一般 SPI 错误，便于上层诊断。
+ */
+static adc_protocol_status_t adc_protocol_status_from_hal(HAL_StatusTypeDef hal_status)
+{
+  if (hal_status == HAL_OK)
+  {
+    return ADC_PROTOCOL_OK;
+  }
+
+  if (hal_status == HAL_TIMEOUT)
+  {
+    return ADC_PROTOCOL_ERR_TIMEOUT;
+  }
+
+  return ADC_PROTOCOL_ERR_SPI;
+}
+
+/* 函数说明：
  *   封装 ADS1220 的基础 SPI 全双工传输。
  * 输入：
  *   tx_buf: 发送缓冲区。
  *   rx_buf: 接收缓冲区。
  *   size: 传输字节数。
+ *   timeout_ms: SPI 事务超时时间，单位 ms。
  * 输出：
- *   true : 传输成功。
- *   false: 传输失败。
+ *   返回协议层状态码。
  * 作用：
  *   统一底层 SPI 读写接口。
  */
-static bool adc_protocol_transfer(const uint8_t *tx_buf, uint8_t *rx_buf, uint16_t size)
+static adc_protocol_status_t adc_protocol_transfer(const uint8_t *tx_buf,
+                                                   uint8_t *rx_buf,
+                                                   uint16_t size,
+                                                   uint32_t timeout_ms)
 {
+  HAL_StatusTypeDef hal_status;
+
   if ((g_spi == NULL) || (size == 0U))
   {
-    return false;
+    return (g_spi == NULL) ? ADC_PROTOCOL_ERR_NOT_INIT : ADC_PROTOCOL_ERR_INVALID_ARG;
   }
 
-  if (HAL_SPI_TransmitReceive(g_spi, (uint8_t *)tx_buf, rx_buf, size, HAL_MAX_DELAY) != HAL_OK)
-  {
-    return false;
-  }
-
-  return true;
+  hal_status = HAL_SPI_TransmitReceive(g_spi, (uint8_t *)tx_buf, rx_buf, size, timeout_ms);
+  return adc_protocol_status_from_hal(hal_status);
 }
 
 /* 函数说明：
@@ -99,26 +124,27 @@ void adc_protocol_init(SPI_HandleTypeDef *hspi)
  * 输入：
  *   command: ADS1220 单字节命令。
  * 输出：
- *   true : 命令发送成功。
- *   false: 命令发送失败。
+ *   返回协议层状态码。
  * 作用：
  *   发送 RESET、START/SYNC、POWERDOWN 等控制命令。
  */
-bool adc_protocol_send_command(uint8_t command)
+adc_protocol_status_t adc_protocol_send_command(uint8_t command)
 {
   uint8_t rx_dummy = 0U;
+  adc_protocol_status_t status;
 
   /* CS 在整个命令期间保持低，符合 ADS1220 串口时序要求。 */
   adc_protocol_chip_select(GPIO_PIN_RESET);
   adc_protocol_delay_cycles(APP_ADC_START_PULSE_CYCLES);
-  if (!adc_protocol_transfer(&command, &rx_dummy, 1U))
+  status = adc_protocol_transfer(&command, &rx_dummy, 1U, APP_ADC_SPI_TIMEOUT_INIT_MS);
+  if (status != ADC_PROTOCOL_OK)
   {
     adc_protocol_chip_select(GPIO_PIN_SET);
-    return false;
+    return status;
   }
   adc_protocol_delay_cycles(APP_ADC_START_PULSE_CYCLES);
   adc_protocol_chip_select(GPIO_PIN_SET);
-  return true;
+  return ADC_PROTOCOL_OK;
 }
 
 /* 函数说明：
@@ -126,19 +152,19 @@ bool adc_protocol_send_command(uint8_t command)
  * 输入：
  *   config: 目标寄存器配置。
  * 输出：
- *   true : 配置写入成功。
- *   false: 配置写入失败。
+ *   返回协议层状态码。
  * 作用：
  *   通过一条 WREG 命令连续写入 4 个配置寄存器。
  */
-bool adc_protocol_configure(const ads1220_config_t *config)
+adc_protocol_status_t adc_protocol_configure(const ads1220_config_t *config)
 {
   uint8_t tx_buf[1U + ADS1220_REG_COUNT] = {0U};
   uint8_t rx_buf[1U + ADS1220_REG_COUNT] = {0U};
+  adc_protocol_status_t status;
 
   if ((g_spi == NULL) || (config == NULL))
   {
-    return false;
+    return (g_spi == NULL) ? ADC_PROTOCOL_ERR_NOT_INIT : ADC_PROTOCOL_ERR_INVALID_ARG;
   }
 
   tx_buf[0] = ADS1220_CMD_WREG(ADS1220_REG_CONFIG0, ADS1220_REG_COUNT);
@@ -150,16 +176,17 @@ bool adc_protocol_configure(const ads1220_config_t *config)
   /* 使用一条 WREG 命令连续写入 4 个寄存器。 */
   adc_protocol_chip_select(GPIO_PIN_RESET);
   adc_protocol_delay_cycles(APP_ADC_START_PULSE_CYCLES);
-  if (!adc_protocol_transfer(tx_buf, rx_buf, (uint16_t)sizeof(tx_buf)))
+  status = adc_protocol_transfer(tx_buf, rx_buf, (uint16_t)sizeof(tx_buf), APP_ADC_SPI_TIMEOUT_INIT_MS);
+  if (status != ADC_PROTOCOL_OK)
   {
     adc_protocol_chip_select(GPIO_PIN_SET);
-    return false;
+    return status;
   }
   adc_protocol_delay_cycles(APP_ADC_START_PULSE_CYCLES);
   adc_protocol_chip_select(GPIO_PIN_SET);
 
   g_expected_config = *config;
-  return true;
+  return ADC_PROTOCOL_OK;
 }
 
 /* 函数说明：
@@ -167,12 +194,11 @@ bool adc_protocol_configure(const ads1220_config_t *config)
  * 输入：
  *   无。
  * 输出：
- *   true : 默认配置写入成功。
- *   false: 默认配置写入失败。
+ *   返回协议层状态码。
  * 作用：
  *   使用工程内定义的默认寄存器值配置 ADS1220。
  */
-bool adc_protocol_configure_default(void)
+adc_protocol_status_t adc_protocol_configure_default(void)
 {
   ads1220_config_t config = {
     {
@@ -191,19 +217,19 @@ bool adc_protocol_configure_default(void)
  * 输入：
  *   config: 配置输出指针。
  * 输出：
- *   true : 回读成功。
- *   false: 回读失败。
+ *   返回协议层状态码。
  * 作用：
  *   读取 ADS1220 的 4 个配置寄存器，用于通信自检或调试。
  */
-bool adc_protocol_read_config(ads1220_config_t *config)
+adc_protocol_status_t adc_protocol_read_config(ads1220_config_t *config)
 {
   uint8_t tx_buf[1U + ADS1220_REG_COUNT] = {0U};
   uint8_t rx_buf[1U + ADS1220_REG_COUNT] = {0U};
+  adc_protocol_status_t status;
 
   if ((g_spi == NULL) || (config == NULL))
   {
-    return false;
+    return (g_spi == NULL) ? ADC_PROTOCOL_ERR_NOT_INIT : ADC_PROTOCOL_ERR_INVALID_ARG;
   }
 
   tx_buf[0] = ADS1220_CMD_RREG(ADS1220_REG_CONFIG0, ADS1220_REG_COUNT);
@@ -211,10 +237,11 @@ bool adc_protocol_read_config(ads1220_config_t *config)
   /* 读寄存器时，第 1 字节发命令，后续时钟把寄存器内容移出。 */
   adc_protocol_chip_select(GPIO_PIN_RESET);
   adc_protocol_delay_cycles(APP_ADC_START_PULSE_CYCLES);
-  if (!adc_protocol_transfer(tx_buf, rx_buf, (uint16_t)sizeof(tx_buf)))
+  status = adc_protocol_transfer(tx_buf, rx_buf, (uint16_t)sizeof(tx_buf), APP_ADC_SPI_TIMEOUT_INIT_MS);
+  if (status != ADC_PROTOCOL_OK)
   {
     adc_protocol_chip_select(GPIO_PIN_SET);
-    return false;
+    return status;
   }
   adc_protocol_delay_cycles(APP_ADC_START_PULSE_CYCLES);
   adc_protocol_chip_select(GPIO_PIN_SET);
@@ -223,7 +250,7 @@ bool adc_protocol_read_config(ads1220_config_t *config)
   config->reg[ADS1220_REG_CONFIG1] = rx_buf[2];
   config->reg[ADS1220_REG_CONFIG2] = rx_buf[3];
   config->reg[ADS1220_REG_CONFIG3] = rx_buf[4];
-  return true;
+  return ADC_PROTOCOL_OK;
 }
 
 /* 函数说明：
@@ -235,15 +262,18 @@ bool adc_protocol_read_config(ads1220_config_t *config)
  * 作用：
  *   同时通过硬件复位脚和 RESET 命令复位 ADS1220。
  */
-void adc_protocol_reset(void)
+adc_protocol_status_t adc_protocol_reset(void)
 {
+  adc_protocol_status_t status;
+
   /* 同时保留硬件 RST 脚和软件 RESET 命令，便于不同阶段复位器件。 */
   HAL_GPIO_WritePin(ADC_START_GPIO_Port, ADC_START_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(ADC_RST_GPIO_Port, ADC_RST_Pin, GPIO_PIN_RESET);
   HAL_Delay(APP_ADC_RESET_PULSE_MS);
   HAL_GPIO_WritePin(ADC_RST_GPIO_Port, ADC_RST_Pin, GPIO_PIN_SET);
-  (void)adc_protocol_send_command(ADS1220_CMD_RESET);
+  status = adc_protocol_send_command(ADS1220_CMD_RESET);
   HAL_Delay(APP_ADC_RESET_PULSE_MS);
+  return status;
 }
 
 /* 函数说明：
@@ -255,10 +285,10 @@ void adc_protocol_reset(void)
  * 作用：
  *   停止转换并发送 POWERDOWN 命令，让 ADS1220 进入低功耗态。
  */
-void adc_protocol_stop(void)
+adc_protocol_status_t adc_protocol_stop(void)
 {
   HAL_GPIO_WritePin(ADC_START_GPIO_Port, ADC_START_Pin, GPIO_PIN_RESET);
-  (void)adc_protocol_send_command(ADS1220_CMD_POWERDOWN);
+  return adc_protocol_send_command(ADS1220_CMD_POWERDOWN);
 }
 
 /* 函数说明：
@@ -270,13 +300,13 @@ void adc_protocol_stop(void)
  * 作用：
  *   通过 START 引脚脉冲和 START/SYNC 命令发起一次转换。
  */
-void adc_protocol_start_conversion(void)
+adc_protocol_status_t adc_protocol_start_conversion(void)
 {
   /* START 引脚脉冲和 START/SYNC 命令都保留，方便后续裁剪策略。 */
   HAL_GPIO_WritePin(ADC_START_GPIO_Port, ADC_START_Pin, GPIO_PIN_SET);
   adc_protocol_delay_cycles(APP_ADC_START_PULSE_CYCLES);
   HAL_GPIO_WritePin(ADC_START_GPIO_Port, ADC_START_Pin, GPIO_PIN_RESET);
-  (void)adc_protocol_send_command(ADS1220_CMD_START_SYNC);
+  return adc_protocol_send_command(ADS1220_CMD_START_SYNC);
 }
 
 /* 函数说明：
@@ -284,30 +314,32 @@ void adc_protocol_start_conversion(void)
  * 输入：
  *   data: 3 字节原始数据输出缓冲区。
  * 输出：
- *   true : 读取成功。
- *   false: 读取失败。
+ *   返回协议层状态码。
  * 作用：
  *   在 DRDY 就绪后直接读取 ADS1220 的 24 位原始结果。
  */
-bool adc_protocol_read_raw24(uint8_t data[ADS1220_DATA_BYTES])
+adc_protocol_status_t adc_protocol_read_raw24(uint8_t data[ADS1220_DATA_BYTES])
 {
+  HAL_StatusTypeDef hal_status;
+
   if ((g_spi == NULL) || (data == NULL))
   {
-    return false;
+    return (g_spi == NULL) ? ADC_PROTOCOL_ERR_NOT_INIT : ADC_PROTOCOL_ERR_INVALID_ARG;
   }
 
   /* DRDY 已经就绪后，直接读取 3 字节数据，不再额外发送 RDATA。 */
   adc_protocol_chip_select(GPIO_PIN_RESET);
   adc_protocol_delay_cycles(APP_ADC_START_PULSE_CYCLES);
-  if (HAL_SPI_Receive(g_spi, data, ADS1220_DATA_BYTES, HAL_MAX_DELAY) != HAL_OK)
+  hal_status = HAL_SPI_Receive(g_spi, data, ADS1220_DATA_BYTES, APP_ADC_SPI_TIMEOUT_RUN_MS);
+  if (hal_status != HAL_OK)
   {
     adc_protocol_chip_select(GPIO_PIN_SET);
-    return false;
+    return adc_protocol_status_from_hal(hal_status);
   }
   adc_protocol_delay_cycles(APP_ADC_START_PULSE_CYCLES);
   adc_protocol_chip_select(GPIO_PIN_SET);
 
-  return true;
+  return ADC_PROTOCOL_OK;
 }
 
 /* 函数说明：
@@ -362,23 +394,29 @@ float adc_protocol_code_to_voltage(int32_t code, float vref, float gain)
  * 输入：
  *   raw_code: 原始码值输出指针。
  * 输出：
- *   true : 读数成功。
- *   false: 读数失败。
+ *   返回协议层状态码。
  * 作用：
  *   对上层提供“一次读回有符号原始码”的简化接口。
  */
-bool adc_protocol_read_sample(int32_t *raw_code)
+adc_protocol_status_t adc_protocol_read_sample(int32_t *raw_code)
 {
   uint8_t data[ADS1220_DATA_BYTES] = {0U};
+  adc_protocol_status_t status;
 
   /* 给上层一个“直接拿到有符号码值”的简化接口。 */
-  if ((raw_code == NULL) || !adc_protocol_read_raw24(data))
+  if (raw_code == NULL)
   {
-    return false;
+    return ADC_PROTOCOL_ERR_INVALID_ARG;
+  }
+
+  status = adc_protocol_read_raw24(data);
+  if (status != ADC_PROTOCOL_OK)
+  {
+    return status;
   }
 
   *raw_code = adc_protocol_parse_raw24(data);
-  return true;
+  return ADC_PROTOCOL_OK;
 }
 
 /* 函数说明：
@@ -386,24 +424,30 @@ bool adc_protocol_read_sample(int32_t *raw_code)
  * 输入：
  *   raw_code: 当前样本码值，当前实现未直接使用。
  * 输出：
- *   true : 通信与配置校验通过。
- *   false: 校验失败。
+ *   返回协议层状态码。
  * 作用：
  *   回读寄存器并与期望配置比较，作为 ADS1220 通信自检依据。
  */
-bool adc_protocol_link_check(int32_t raw_code)
+adc_protocol_status_t adc_protocol_link_check(int32_t raw_code)
 {
   ads1220_config_t config;
+  adc_protocol_status_t status;
 
   UNUSED(raw_code);
 
   /* 当前通信自检策略：
    * 检查寄存器回读是否与期望配置一致，不对码值内容做强假设。 */
-  if (!adc_protocol_read_config(&config))
+  status = adc_protocol_read_config(&config);
+  if (status != ADC_PROTOCOL_OK)
   {
-    return false;
+    return status;
   }
 
-  return (memcmp(&config, &g_expected_config, sizeof(config)) == 0);
+  if (memcmp(&config, &g_expected_config, sizeof(config)) != 0)
+  {
+    return ADC_PROTOCOL_ERR_CONFIG_MISMATCH;
+  }
+
+  return ADC_PROTOCOL_OK;
 }
 

@@ -24,6 +24,16 @@ typedef struct
   uint8_t reg[ADS1220_REG_COUNT];
 } ads1220_config_t;
 
+typedef enum
+{
+  ADC_PROTOCOL_OK = 0,
+  ADC_PROTOCOL_ERR_NOT_INIT,
+  ADC_PROTOCOL_ERR_INVALID_ARG,
+  ADC_PROTOCOL_ERR_SPI,
+  ADC_PROTOCOL_ERR_TIMEOUT,
+  ADC_PROTOCOL_ERR_CONFIG_MISMATCH
+} adc_protocol_status_t;
+
 /* ADS1220 普通转换结果固定输出 24 bit，MSB first。 */
 #define ADS1220_DATA_BYTES               3U
 
@@ -43,24 +53,24 @@ typedef struct
 
 void adc_protocol_init(SPI_HandleTypeDef *hspi);
 /* 一次性写入 4 个配置寄存器。 */
-bool adc_protocol_configure(const ads1220_config_t *config);
+adc_protocol_status_t adc_protocol_configure(const ads1220_config_t *config);
 /* 使用工程默认值配置 ADS1220。 */
-bool adc_protocol_configure_default(void);
+adc_protocol_status_t adc_protocol_configure_default(void);
 /* 回读 4 个配置寄存器，常用于上电自检。 */
-bool adc_protocol_read_config(ads1220_config_t *config);
+adc_protocol_status_t adc_protocol_read_config(ads1220_config_t *config);
 /* 发送单字节控制命令。 */
-bool adc_protocol_send_command(uint8_t command);
-void adc_protocol_reset(void);
-void adc_protocol_stop(void);
-void adc_protocol_start_conversion(void);
+adc_protocol_status_t adc_protocol_send_command(uint8_t command);
+adc_protocol_status_t adc_protocol_reset(void);
+adc_protocol_status_t adc_protocol_stop(void);
+adc_protocol_status_t adc_protocol_start_conversion(void);
 /* DRDY 就绪后直接读取 3 字节原始码，不额外发送 RDATA。 */
-bool adc_protocol_read_raw24(uint8_t data[ADS1220_DATA_BYTES]);
+adc_protocol_status_t adc_protocol_read_raw24(uint8_t data[ADS1220_DATA_BYTES]);
 /* 24 位二进制补码扩展为 32 位有符号整数。 */
 int32_t adc_protocol_parse_raw24(const uint8_t data[ADS1220_DATA_BYTES]);
 /* 按 Vref 和 Gain 把 ADC 码值换算为输入差分电压。 */
 float adc_protocol_code_to_voltage(int32_t code, float vref, float gain);
-bool adc_protocol_read_sample(int32_t *raw_code);
-bool adc_protocol_link_check(int32_t raw_code);
+adc_protocol_status_t adc_protocol_read_sample(int32_t *raw_code);
+adc_protocol_status_t adc_protocol_link_check(int32_t raw_code);
 
 #ifdef __cplusplus
 }
