@@ -13,7 +13,7 @@ extern "C" {
 #define APP_DARK_CALIBRATION_SAMPLES      256U
 #define APP_DRDY_TIMEOUT_MS               10U
 #define APP_FILTER_ALPHA_SHIFT            3U
-#define APP_USB_QUEUE_DEPTH               16U
+#define APP_USB_QUEUE_DEPTH               16U // USB 样本队列深度，过小可能导致数据丢失过多，过大则占用更多 RAM 并增加单帧延迟
 #define APP_USB_AUX_QUEUE_DEPTH           4U
 #define APP_USB_BATCH_MAX_WAIT_MS         2U
 #define APP_DAC_BIAS_CH1                  2048U // 12-bit DAC 输出中点，提供约 VREF/2 的偏置电压
@@ -37,14 +37,14 @@ extern "C" {
 #define SAMPLE_PACKET_MAGIC               0xA55AU
 #define SAMPLE_PACKET_VERSION             2U
 
-#define SAMPLE_FLAG_DRDY_TIMEOUT          0x0001U
-#define SAMPLE_FLAG_SPI_ERROR             0x0002U
-#define SAMPLE_FLAG_COMM_CHECK_FAILED     0x0004U
-#define SAMPLE_FLAG_USB_OVERFLOW          0x0008U
-#define SAMPLE_FLAG_FAULT_STATE           0x0010U
-#define SAMPLE_FLAG_FAULT_REPORT          0x0020U
-#define SAMPLE_FLAG_INFO_FRAME            0x0040U
-#define SAMPLE_FLAG_PARAM_FRAME           0x0080U
+#define SAMPLE_FLAG_DRDY_TIMEOUT          0x0001U   // 采样等待 DRDY 超时，可能的原因包括 ADC 死锁、SPI 通信异常等
+#define SAMPLE_FLAG_SPI_ERROR             0x0002U   // SPI 传输错误，可能的原因包括硬件连接问题、时序配置错误等
+#define SAMPLE_FLAG_COMM_CHECK_FAILED     0x0004U   // 自检通信异常，可能的原因包括 ADC 无响应、寄存器读回值不符等
+#define SAMPLE_FLAG_USB_OVERFLOW          0x0008U   // USB 队列溢出，表示在当前帧入队时队列已满，最旧数据被丢弃以腾出空间
+#define SAMPLE_FLAG_FAULT_STATE           0x0010U   // 故障状态，表示当前样本处于某种异常状态，具体原因需结合其他标志位分析
+#define SAMPLE_FLAG_FAULT_REPORT          0x0020U   // 故障报告帧，表示当前帧为周期性故障报告，用于持续上报故障状态以便上位机监控
+#define SAMPLE_FLAG_INFO_FRAME            0x0040U   // 信息帧，表示当前帧负载的是版本、构建信息等元数据，而非正常样本数据
+#define SAMPLE_FLAG_PARAM_FRAME           0x0080U   // 参数帧，表示当前帧负载的是采样参数、编译时配置等元数据，而非正常样本数据
 
 #define APP_USB_COMMAND_INFO              'I'
 #define APP_USB_COMMAND_PARAMS            'P'

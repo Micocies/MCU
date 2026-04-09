@@ -493,10 +493,10 @@ static void app_process_pending_commands(void)
   uint32_t primask;
   uint8_t command_flags;
 
-  primask = __get_PRIMASK();
-  __disable_irq();
+  primask = __get_PRIMASK();  // 先保存当前中断状态，再清空命令标志以避免重复处理，最后根据之前的中断状态决定是否恢复中断。
+  __disable_irq();            // 进入临界区保护命令标志，避免与 USB 中断回调冲突
   command_flags = g_app.command_flags;
-  g_app.command_flags = APP_COMMAND_FLAG_NONE;
+  g_app.command_flags = APP_COMMAND_FLAG_NONE;  // 清空命令标志，准备接受下一轮命令请求
   if (primask == 0U)
   {
     __enable_irq();

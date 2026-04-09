@@ -431,6 +431,13 @@
 - `baseline_code : int32_t`
 - `corrected_code : int32_t`
 
+其中 `sequence` 字段承载正常样本流的 `sample_sequence`，协议约定如下：
+
+- `sample_sequence` 类型为 `uint32_t`
+- 每发送 1 个正常样本帧递增 `1`
+- 到 `UINT32_MAX` 后回绕到 `0`
+- 主机端做连续性校验时必须支持这种 `uint32_t` wrap-around
+
 样本帧会优先按两个 32 字节拼成一个 64 字节 USB FS 包；如果只剩 1 帧，则等待最多 `APP_USB_BATCH_MAX_WAIT_MS` 后再单独发出。元信息和故障帧使用独立辅助队列，不会把最旧样本挤掉。
 
 ## 中断设计原则

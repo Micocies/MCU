@@ -77,7 +77,10 @@ Rules:
 
 - `magic` is always `0xA55A`
 - `version` is always `2` for this baseline
-- Normal sample frames use `sequence` as the sample-only monotonic counter
+- `sample_sequence` is carried in the `sequence` field of normal sample frames and is a `uint32_t`
+- `sample_sequence` increments by `1` for every normal sample frame
+- `sample_sequence` wraps to `0` after reaching `UINT32_MAX`
+- Host-side sample continuity checks must support this `uint32_t` wrap-around behavior
 - Fault and metadata frames use an independent sequence domain and must not be included in sample continuity checks
 - `reserved` carries `adc_status | (usb_status << 8)` for sample/fault frames
 - `reserved` carries metadata subtype for `INFO/PARAM` frames

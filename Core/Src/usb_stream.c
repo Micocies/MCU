@@ -28,7 +28,17 @@ typedef struct
 } usb_stream_context_t;
 
 static usb_stream_context_t g_usb_stream;
-
+/* 函数说明：
+ *   初始化 USB 发送上下文。
+ * 输入：
+ *   usb_stream_ring_t *ring 环形队列指针
+ *   uint32_t ring_depth 队列深度
+ *   const sample_packet_t *pkt 待发送的数据包指针
+ * 输出：
+ *   usb_stream_enqueue_result_t 枚举值，入队结果码
+ * 作用：
+ *   将数据包写入指定环形队列，队列满时丢弃最旧数据并为新包标记溢出标志。
+ */
 static usb_stream_enqueue_result_t usb_stream_enqueue_internal(usb_stream_ring_t *ring,
                                                                uint32_t ring_depth,
                                                                const sample_packet_t *pkt)
@@ -57,7 +67,16 @@ static usb_stream_enqueue_result_t usb_stream_enqueue_internal(usb_stream_ring_t
 
   return (dropped_oldest == false) ? USB_STREAM_ENQUEUE_OK : USB_STREAM_ENQUEUE_OK_DROPPED_OLDEST;
 }
-
+/* 函数说明：
+ *   判断从起始时刻到现在是否已经超过指定时长。
+ * 输入：
+ *   uint32_t start_ms 起始时刻
+ *   uint32_t duration_ms 指定时间间隔
+ * 输出：
+ *   bool 返回值，表示是否超过指定时长
+ * 作用：
+ *   同函数说明
+ */
 static bool usb_stream_has_elapsed(uint32_t start_ms, uint32_t duration_ms)
 {
   return ((HAL_GetTick() - start_ms) >= duration_ms);
@@ -70,7 +89,18 @@ static void usb_stream_mark_sample_pending_start(void)
     g_usb_stream.sample_wait_start_ms = HAL_GetTick();
   }
 }
-
+/* 函数说明：
+ *   选择当前待发送的数据包数量。
+ * 输入：
+ *   const usb_stream_ring_t *ring 待检查的环形队列指针
+ *   bool allow_batch_wait 是否允许等待更多数据以组成批量发送
+ * 输出：
+ *   uint32_t 返回值，表示当前可发送的数据包数量（0、1 或 2）
+ * 作用：
+ *   根据队列状态和等待时间判断当前是否可以发送数据包，支持单包或批量发送以优化 USB 带宽利用率。
+ *   允许批量等待时，如果队列中只有 1 个包但未超过最大等待时间，则返回 0，等待更多数据到来以组成批量发送。
+ *   否则返回当前可发送的包数量（最多 2 个）。
+ */
 static uint32_t usb_stream_select_packet_count(const usb_stream_ring_t *ring, bool allow_batch_wait)
 {
   if ((ring == NULL) || (ring->count == 0U))
@@ -93,7 +123,19 @@ static uint32_t usb_stream_select_packet_count(const usb_stream_ring_t *ring, bo
 
   return 1U;
 }
-
+/* 函数说明：
+ *   将数据包从环形队列复制到 USB 发送缓冲区。
+ * 输入：
+ *   const usb_stream_ring_t *ring 待复制的环形队列指针
+ *   uint32_t ring_depth 队列深度
+ *   uint32_t packet_count 要复制的数据包数量
+ * 输出：
+ *   无
+ * 作用：
+ *   从队列的 tail 开始复制指定数量的数据包到 USB 发送缓冲区，支持单包或批量复制以优化 USB 带宽利用率。
+ *   复制时考虑环形队列的循环特性，确保正确处理队列尾部和头部之间的边界情况。
+ *   复制完成后，USB 发送缓冲区将包含要发送的数据包，可以直接用于 USB CDC 传输。
+ */
 static void usb_stream_copy_packets(const usb_stream_ring_t *ring, uint32_t ring_depth, uint32_t packet_count)
 {
   memcpy(&g_usb_stream.tx_buffer[0],
@@ -107,7 +149,17 @@ static void usb_stream_copy_packets(const usb_stream_ring_t *ring, uint32_t ring
            sizeof(sample_packet_t));
   }
 }
-
+/* 函数说明：
+ *   从环形队列中弹出已发送的数据包。
+ * 输入：
+ *   usb_stream_ring_t *ring 待弹出的环形队列指针 
+ *   uint32_t ring_depth 队列深度
+ *   uint32_t packet_count 要弹出的数据包数量
+ * 输出：
+ *    无
+ * 作用：
+ *   同函数说明。
+ */
 static void usb_stream_pop_packets(usb_stream_ring_t *ring, uint32_t ring_depth, uint32_t packet_count)
 {
   ring->tail = (ring->tail + packet_count) % ring_depth;

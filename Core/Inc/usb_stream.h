@@ -13,17 +13,17 @@ extern "C" {
  * 默认承载单样本；若 flags 置位 INFO/PARAM，则 4 个 int32 字段改作元信息负载。 */
 typedef struct
 {
-  uint16_t magic;
-  uint8_t version;
-  uint8_t state;
-  uint16_t flags;
-  uint16_t reserved;
-  uint32_t sequence;
-  uint32_t timestamp_us;
-  int32_t raw_code;
-  int32_t filtered_code;
-  int32_t baseline_code;
-  int32_t corrected_code;
+  uint16_t magic;     // 固定帧头，便于上位机快速识别帧边界和版本
+  uint8_t version;    // 协议版本，便于后续升级时兼容处理
+  uint8_t state;      // 预留状态位，当前未定义具体含义
+  uint16_t flags;     // 标志位，指示样本状态或帧类型（如信息帧、参数帧等）
+  uint16_t reserved;  // 预留对齐字节，保持结构体大小为 32 字节
+  uint32_t sequence;  // 样本序号，主样本队列递增，辅助队列保持与主队列一致以便关联分析
+  uint32_t timestamp_us;// 采样时刻相对于某个起始点的微秒级时间戳，便于上位机重建采样时序
+  int32_t raw_code;     // 原始 ADC 码值，24-bit 数据右对齐存储在 32-bit 字段中
+  int32_t filtered_code;// 滤波后 ADC 码值，24-bit 数据右对齐存储在 32-bit 字段中
+  int32_t baseline_code;// 基线 ADC 码值，24-bit 数据右对齐存储在 32-bit 字段中
+  int32_t corrected_code;// 校正后 ADC 码值，24-bit 数据右对齐存储在 32-bit 字段中
 } sample_packet_t;
 
 /* 编译期约束，防止结构体被编译器额外填充。 */
