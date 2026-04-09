@@ -47,7 +47,9 @@ Analog defaults:
 
 Frozen-parameter fingerprint:
 
-- `param_signature = FNV-1a(packet_version + sample timing + queue depth + DAC bias + ADS1220 defaults)`
+- `param_signature = standard FNV-1a over a fixed u32 list serialized in little-endian byte order`
+- Serialization order:
+  `packet_version`, `sample_rate_hz`, `bias_stabilize_ms`, `dark_calibration_samples`, `drdy_timeout_ms`, `filter_alpha_shift`, `usb_queue_depth`, `dac_bias_ch1`, `dac_bias_ch2`, `ads1220_default_config`
 - Host can compare the signature against the startup `INFO` frame to confirm that factory defaults are intact.
 
 ## USB Baseline Format
@@ -79,6 +81,9 @@ Rules:
 - Fault and metadata frames use an independent sequence domain and must not be included in sample continuity checks
 - `reserved` carries `adc_status | (usb_status << 8)` for sample/fault frames
 - `reserved` carries metadata subtype for `INFO/PARAM` frames
+- Sample frames are queued separately from metadata/fault frames
+- Sample transmission prefers `2 x 32-byte` aggregation into one `64-byte` FS packet
+- A single pending sample frame is flushed after `APP_USB_BATCH_MAX_WAIT_MS = 2`
 
 Frame flags:
 
@@ -109,6 +114,7 @@ Firmware recognizes a minimal CDC command set. Commands can be sent as a single 
 - `B` or `b`: re-send the full baseline descriptor set
 
 The firmware also queues one baseline descriptor set automatically during startup.
+Metadata and fault traffic use a low-priority auxiliary queue, so `I/P/B` commands must not create sample-sequence gaps by themselves.
 
 ## Minimal Validation Script
 
@@ -118,6 +124,7 @@ The firmware also queues one baseline descriptor set automatically during startu
 - Packet version verification
 - Sample-sequence continuity checks
 - Metadata decoding
+- Standard FNV-1a signature recomputation from metadata frames
 - Fault frame summary printing
 
 Example:
@@ -128,8 +135,8 @@ python tools/usb_capture.py COM6 --request all --max-frames 100000 --timeout 120
 
 Exit code:
 
-- `0`: no parse error, no sample sequence gap observed in the capture window
-- `1`: parse error or sample sequence discontinuity observed
+- `0`: no parse error, no sample sequence gap, no signature mismatch observed
+- `1`: parse error, sample sequence discontinuity, or signature mismatch observed
 
 ## Baseline Test Report Template
 

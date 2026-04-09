@@ -15,7 +15,7 @@
 - `Core/Src/adc_protocol.c`
   ADS1220 驱动层，负责 `RESET / START/SYNC / POWERDOWN / WREG / RREG / 读 3 字节 / 补码解析`
 - `Core/Src/usb_stream.c`
-  USB CDC 发送队列，负责 32 字节样本帧管理和 64 字节 FS 包聚合发送
+  USB CDC 发送层，负责样本/辅助双队列管理、32 字节帧打包和 64 字节 FS 包优先聚合发送
 - `Core/Src/stm32g4xx_it.c`
   中断入口，`EXTI0` 只置 `DRDY` 事件，`TIM6_DAC` 只置采样节拍事件，`USB_LP` 交给 Cube USB 设备栈
 - `USB_Device/App/usbd_cdc_if.c`
@@ -210,8 +210,8 @@
   - 然后进入 `APP_STATE_USB_FLUSH`
 
 - `APP_STATE_USB_FLUSH`
-  - 调用 `app_build_packet()` 打包 32 字节样本帧
-  - 通过 `usb_stream_enqueue()` 压入 USB 发送队列
+  - 调用 `app_build_sample_packet()` 打包 32 字节样本帧
+  - 通过 `usb_stream_enqueue_sample()` 压入样本发送队列
   - 随后回到 `APP_STATE_WAIT_TRIGGER`
 
 因此，正常运行阶段可以概括为：
@@ -245,7 +245,7 @@
 
 - 不再恢复到采样状态
 - 只通过 `app_handle_fault_reporting()` 周期性构造故障帧
-- 故障帧继续通过 `usb_stream_enqueue()` 进入 USB 队列
+- 故障帧继续通过 `usb_stream_enqueue_aux()` 进入辅助发送队列
 
 也就是说，当前版本的故障态是“锁定式故障态”：
 
@@ -431,7 +431,7 @@
 - `baseline_code : int32_t`
 - `corrected_code : int32_t`
 
-两个样本帧会优先拼成一个 64 字节 USB FS 包，减少传输碎片。
+样本帧会优先按两个 32 字节拼成一个 64 字节 USB FS 包；如果只剩 1 帧，则等待最多 `APP_USB_BATCH_MAX_WAIT_MS` 后再单独发出。元信息和故障帧使用独立辅助队列，不会把最旧样本挤掉。
 
 ## 中断设计原则
 

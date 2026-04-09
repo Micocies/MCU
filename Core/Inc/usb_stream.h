@@ -38,8 +38,10 @@ typedef enum
 
 /* 初始化 USB 发送队列。 */
 void usb_stream_init(void);
-/* 采样结果入队；当前实现仅支持单一主循环上下文访问。 */
-usb_stream_enqueue_result_t usb_stream_enqueue(const sample_packet_t *pkt);
+/* 采样结果入队；样本队列满时仅影响样本帧。 */
+usb_stream_enqueue_result_t usb_stream_enqueue_sample(const sample_packet_t *pkt);
+/* 元信息/故障结果入队；辅助队列与样本队列隔离，避免打断样本连续性。 */
+usb_stream_enqueue_result_t usb_stream_enqueue_aux(const sample_packet_t *pkt);
 /* 尝试把队列头部数据送往 USB CDC。 */
 void usb_stream_service(void);
 

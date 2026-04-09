@@ -24,6 +24,7 @@ typedef struct
 uint32_t version_get_semver_packed(void);
 uint32_t version_get_build_number(void);
 uint32_t version_get_packet_version(void);
+/* Standard FNV-1a over a fixed little-endian u32 field sequence. */
 uint32_t version_get_param_signature(void);
 uint32_t version_get_ads1220_default_config(void);
 void version_get_descriptor(version_descriptor_t *descriptor);

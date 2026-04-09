@@ -14,6 +14,8 @@ extern "C" {
 #define APP_DRDY_TIMEOUT_MS               10U
 #define APP_FILTER_ALPHA_SHIFT            3U
 #define APP_USB_QUEUE_DEPTH               16U
+#define APP_USB_AUX_QUEUE_DEPTH           4U
+#define APP_USB_BATCH_MAX_WAIT_MS         2U
 #define APP_DAC_BIAS_CH1                  2048U // 12-bit DAC 输出中点，提供约 VREF/2 的偏置电压
 #define APP_DAC_BIAS_CH2                  2048U
 #define APP_FAULT_REPORT_INTERVAL_MS      1000U

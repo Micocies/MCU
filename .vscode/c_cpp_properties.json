@@ -14,7 +14,7 @@
         "USE_HAL_DRIVER"
       ],
       "windowsSdkVersion": "10.0.22000.0",
-      "compilerPath": "D:/Usual program/Loadfiles/mingw64/bin/gcc.exe",
+      "compilerPath": "D:\\code\\msys2\\mingw64\\bin\\gcc.exe",
       "cStandard": "c17",
       "cppStandard": "c++17",
       "intelliSenseMode": "windows-gcc-x64"

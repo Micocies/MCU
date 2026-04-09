@@ -56,7 +56,7 @@
  *   main.c         : CubeMX 外设初始化 + 主循环入口
  *   app.c          : 状态机调度、滤波、暗态校准、数据打包
  *   adc_protocol.c : ADS1220 命令、寄存器、读数和码值解析
- *   usb_stream.c   : USB CDC 队列、64 字节打包和重试发送
+ *   usb_stream.c   : USB CDC 样本/辅助双队列、64 字节优先打包和重试发送
  *   stm32g4xx_it.c : EXTI0 / TIM6 / USB 中断转发
  * ==========================================================================*/
 
@@ -454,7 +454,7 @@ static void app_send_baseline_metadata(uint8_t send_info, uint8_t send_params)
                           (int32_t)descriptor.build_number,
                           (int32_t)descriptor.packet_version,
                           (int32_t)descriptor.param_signature);
-    g_app.last_usb_status = (uint8_t)usb_stream_enqueue(&pkt);
+    g_app.last_usb_status = (uint8_t)usb_stream_enqueue_aux(&pkt);
   }
 
   if (send_params != 0U)
@@ -466,7 +466,7 @@ static void app_send_baseline_metadata(uint8_t send_info, uint8_t send_params)
                           (int32_t)APP_BIAS_STABILIZE_MS,
                           (int32_t)APP_DARK_CALIBRATION_SAMPLES,
                           (int32_t)APP_DRDY_TIMEOUT_MS);
-    g_app.last_usb_status = (uint8_t)usb_stream_enqueue(&pkt);
+    g_app.last_usb_status = (uint8_t)usb_stream_enqueue_aux(&pkt);
 
     app_build_meta_packet(&pkt,
                           SAMPLE_FLAG_PARAM_FRAME,
@@ -475,7 +475,7 @@ static void app_send_baseline_metadata(uint8_t send_info, uint8_t send_params)
                           (int32_t)APP_USB_QUEUE_DEPTH,
                           (int32_t)(((uint32_t)APP_DAC_BIAS_CH2 << 16) | (uint32_t)APP_DAC_BIAS_CH1),
                           (int32_t)descriptor.ads1220_default_config);
-    g_app.last_usb_status = (uint8_t)usb_stream_enqueue(&pkt);
+    g_app.last_usb_status = (uint8_t)usb_stream_enqueue_aux(&pkt);
   }
 }
 
@@ -531,7 +531,7 @@ static void app_handle_fault_reporting(void)
 
   g_app.last_fault_report_ms = HAL_GetTick();
   app_build_fault_packet(&pkt, (uint16_t)(g_app.fault_flags | SAMPLE_FLAG_FAULT_STATE | SAMPLE_FLAG_FAULT_REPORT));
-  g_app.last_usb_status = (uint8_t)usb_stream_enqueue(&pkt);
+  g_app.last_usb_status = (uint8_t)usb_stream_enqueue_aux(&pkt);
 }
 
 /* 函数说明：
@@ -776,7 +776,7 @@ static void app_handle_usb_flush_state(void)
   sample_packet_t pkt;
 
   app_build_sample_packet(&pkt, 0U);
-  g_app.last_usb_status = (uint8_t)usb_stream_enqueue(&pkt);
+  g_app.last_usb_status = (uint8_t)usb_stream_enqueue_sample(&pkt);
   app_set_state(APP_STATE_WAIT_TRIGGER);
 }
 

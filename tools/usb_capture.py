@@ -35,6 +35,8 @@ META_SUBTYPE_PARAMS_ADC = 2
 CMD_INFO = b"I"
 CMD_PARAMS = b"P"
 CMD_BASELINE = b"B"
+FNV1A_INIT = 0x811C9DC5
+FNV1A_PRIME = 0x01000193
 
 
 @dataclass
@@ -101,6 +103,21 @@ def decode_flags(flags: int) -> str:
     return ",".join(names) if names else "NONE"
 
 
+def fnv1a32_bytes(data: bytes) -> int:
+    value = FNV1A_INIT
+    for byte in data:
+        value ^= byte
+        value = (value * FNV1A_PRIME) & 0xFFFFFFFF
+    return value
+
+
+def fnv1a32_u32_le(values: list[int]) -> int:
+    payload = bytearray()
+    for value in values:
+        payload.extend(struct.pack("<I", u32(value)))
+    return fnv1a32_bytes(payload)
+
+
 def print_info_packet(packet: Packet) -> None:
     print(
         "[info] "
@@ -144,6 +161,31 @@ def print_param_packet(packet: Packet) -> None:
     )
 
 
+def maybe_validate_param_signature(info_packet: Packet, timing_packet: Packet, adc_packet: Packet) -> bool:
+    dac_bias = u32(adc_packet.baseline_code)
+    expected = fnv1a32_u32_le(
+        [
+            info_packet.baseline_code,
+            timing_packet.raw_code,
+            timing_packet.filtered_code,
+            timing_packet.baseline_code,
+            timing_packet.corrected_code,
+            adc_packet.raw_code,
+            adc_packet.filtered_code,
+            dac_bias & 0xFFFF,
+            (dac_bias >> 16) & 0xFFFF,
+            adc_packet.corrected_code,
+        ]
+    )
+    actual = u32(info_packet.corrected_code)
+    status = "ok" if actual == expected else "mismatch"
+    print(
+        "[sig] "
+        f"actual=0x{actual:08X} expected=0x{expected:08X} status={status}"
+    )
+    return actual == expected
+
+
 def request_metadata(ser: serial.Serial, mode: str) -> None:
     if mode == "none":
         return
@@ -163,6 +205,10 @@ def read_packets(ser: serial.Serial, max_frames: int, timeout_s: float) -> int:
     sample_frames = 0
     last_sample_sequence: int | None = None
     sequence_gaps = 0
+    signature_mismatches = 0
+    info_packet: Packet | None = None
+    timing_packet: Packet | None = None
+    adc_packet: Packet | None = None
 
     while total_frames < max_frames:
         if timeout_s > 0 and (time.time() - start) >= timeout_s:
@@ -197,11 +243,22 @@ def read_packets(ser: serial.Serial, max_frames: int, timeout_s: float) -> int:
             total_frames += 1
 
             if packet.is_info():
+                info_packet = packet
                 print_info_packet(packet)
+                if timing_packet is not None and adc_packet is not None:
+                    if not maybe_validate_param_signature(info_packet, timing_packet, adc_packet):
+                        signature_mismatches += 1
                 continue
 
             if packet.is_param():
+                if packet.reserved == META_SUBTYPE_PARAMS_TIMING:
+                    timing_packet = packet
+                elif packet.reserved == META_SUBTYPE_PARAMS_ADC:
+                    adc_packet = packet
                 print_param_packet(packet)
+                if info_packet is not None and timing_packet is not None and adc_packet is not None:
+                    if not maybe_validate_param_signature(info_packet, timing_packet, adc_packet):
+                        signature_mismatches += 1
                 continue
 
             if packet.is_fault():
@@ -226,9 +283,10 @@ def read_packets(ser: serial.Serial, max_frames: int, timeout_s: float) -> int:
     print(
         "[summary] "
         f"frames={total_frames} samples={sample_frames} "
-        f"parse_errors={parse_errors} sample_sequence_gaps={sequence_gaps}"
+        f"parse_errors={parse_errors} sample_sequence_gaps={sequence_gaps} "
+        f"signature_mismatches={signature_mismatches}"
     )
-    return 1 if (parse_errors != 0 or sequence_gaps != 0) else 0
+    return 1 if (parse_errors != 0 or sequence_gaps != 0 or signature_mismatches != 0) else 0
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
