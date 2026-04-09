@@ -22,6 +22,7 @@
 #include "usbd_cdc_if.h"
 
 /* USER CODE BEGIN INCLUDE */
+#include "app.h"
 /* USER CODE END INCLUDE */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -125,11 +126,20 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
  * 输出：
  *   返回接收处理状态。
  * 作用：
- *   当前不解析来自 PC 的业务命令，只重新挂载接收缓冲区。
+ *   解析最小命令字节并重新挂载接收缓冲区。
  */
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
-  UNUSED(Len);
+  if ((Buf == NULL) || (Len == NULL))
+  {
+    return (USBD_FAIL);
+  }
+
+  if (*Len != 0U)
+  {
+    app_on_usb_command_rx(Buf, *Len);
+  }
+
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
   return (USBD_OK);

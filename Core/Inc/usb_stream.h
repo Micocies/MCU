@@ -9,7 +9,8 @@ extern "C" {
 #include <stdint.h>
 
 /* 发往上位机的固定长度二进制帧。
- * 保持 32 字节，便于两个样本刚好拼成一个 64 字节 FS 包。 */
+ * 保持 32 字节，便于两个数据帧刚好拼成一个 64 字节 FS 包。
+ * 默认承载单样本；若 flags 置位 INFO/PARAM，则 4 个 int32 字段改作元信息负载。 */
 typedef struct
 {
   uint16_t magic;

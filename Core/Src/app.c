@@ -68,6 +68,7 @@
 #include "app_config.h"
 #include "main.h"
 #include "usb_stream.h"
+#include "version.h"
 
 extern DAC_HandleTypeDef hdac1;
 extern SPI_HandleTypeDef hspi1;
@@ -81,16 +82,32 @@ typedef enum
   APP_PIPELINE_RUN              //正常运行
 } app_pipeline_mode_t;
 
+typedef enum
+{
+  APP_COMMAND_FLAG_NONE = 0U,
+  APP_COMMAND_FLAG_INFO = 1U << 0,
+  APP_COMMAND_FLAG_PARAMS = 1U << 1
+} app_command_flag_t;
+
+typedef enum
+{
+  APP_META_SUBTYPE_INFO = 0U,
+  APP_META_SUBTYPE_PARAMS_TIMING = 1U,
+  APP_META_SUBTYPE_PARAMS_ADC = 2U
+} app_meta_subtype_t;
+
 typedef struct
 {
   volatile uint8_t evt_sample_tick; // TIM6 采样节拍事件
   volatile uint8_t evt_drdy;        // ADS1220 DRDY 事件
+  volatile uint8_t command_flags;   // USB 命令请求标志，由 CDC 接收回调置位
   app_state_t state;                // 当前状态
   app_pipeline_mode_t pipeline_mode;// 当前样本所属的流水线阶段
   uint32_t state_enter_ms;          // 进入当前状态的时间戳，单位 ms
   uint32_t drdy_deadline_ms;        // 等待 DRDY 的截止时间戳，单位 ms
   uint32_t last_fault_report_ms;    // 上次故障帧发送的时间戳，单位 ms
-  uint32_t sequence;                // 样本序列号，单调递增
+  uint32_t sample_sequence;         // 单样本序列号，仅对正常样本帧递增
+  uint32_t meta_sequence;           // 元信息/故障帧序列号，避免打断样本连续性
   uint32_t calibration_count;       // 已累积的校准样本数量
   int64_t calibration_accumulator;  // 校准样本累加器，用于求暗态基线
   int32_t raw_code;                 // 当前原始 ADC 码值
@@ -309,29 +326,189 @@ static int32_t app_filter_raw_code(int32_t raw_code)
 }
 
 /* 函数说明：
- *   构造一个样本数据包。
+ *   打包最近一次 ADC/USB 发送状态。
+ * 输入：
+ *   无。
+ * 输出：
+ *   返回 16 bit 状态字。
+ * 作用：
+ *   普通样本和故障帧都复用这一状态摘要，便于上位机定位链路问题。
+ */
+static uint16_t app_compose_status_word(void)
+{
+  return (uint16_t)(((uint16_t)g_app.last_usb_status << 8) | g_app.last_adc_status);
+}
+
+/* 函数说明：
+ *   初始化一个固定 32 字节 USB 帧头。
  * 输入：
  *   pkt: 输出数据包指针。
  *   flags: 当前包附带的状态标志。
+ *   reserved: 样本帧时保存链路状态，元信息帧时保存子类型。
+ *   sequence: 当前帧使用的序列号。
  * 输出：
  *   无。
  * 作用：
- *   将当前采样上下文打包成固定 32 字节 USB 二进制帧。
+ *   统一填充包头字段，样本/故障/元信息帧都共享这一步。
  */
-static void app_build_packet(sample_packet_t *pkt, uint16_t flags)
+static void app_prepare_packet(sample_packet_t *pkt, uint16_t flags, uint16_t reserved, uint32_t sequence)
 {
   memset(pkt, 0, sizeof(*pkt));
   pkt->magic = SAMPLE_PACKET_MAGIC;       // 固定包头，便于上位机识别帧边界
   pkt->version = SAMPLE_PACKET_VERSION;   // 包格式版本，便于后续升级兼容
   pkt->state = (uint8_t)g_app.state;      // 当前状态机状态，便于上位机了解采样上下文 
   pkt->flags = flags;                     // 当前样本的状态标志，按位定义见 SAMPLE_FLAG_XXX
-  pkt->reserved = (uint16_t)(((uint16_t)g_app.last_usb_status << 8) | g_app.last_adc_status); // 低字节记录 ADC 状态，高字节记录 USB 入队结果
-  pkt->sequence = g_app.sequence++;       // 样本序列号，单调递增，便于上位机检测丢包和乱序
+  pkt->reserved = reserved;
+  pkt->sequence = sequence;
   pkt->timestamp_us = app_get_timestamp_us(); // 当前时间戳，单位 us
+}
+
+/* 函数说明：
+ *   构造一个普通样本数据包。
+ * 输入：
+ *   pkt: 输出数据包指针。
+ *   flags: 当前包附带的状态标志。
+ * 输出：
+ *   无。
+ * 作用：
+ *   将当前采样上下文打包成固定 32 字节 USB 样本帧。
+ */
+static void app_build_sample_packet(sample_packet_t *pkt, uint16_t flags)
+{
+  app_prepare_packet(pkt, flags, app_compose_status_word(), g_app.sample_sequence++);
   pkt->raw_code = g_app.raw_code;         // 当前原始 ADC 码值
   pkt->filtered_code = g_app.filtered_code; // 当前滤波结果
   pkt->baseline_code = g_app.baseline_code; // 当前基线值（暗态均值）
   pkt->corrected_code = g_app.corrected_code; // 当前扣除基线后的码值
+}
+
+/* 函数说明：
+ *   构造一个元信息帧。
+ * 输入：
+ *   pkt: 输出数据包指针。
+ *   flags: 当前包附带的元信息标志。
+ *   subtype: 元信息子类型编号。
+ *   payload0~3: 4 个 32 bit 元信息负载。
+ * 输出：
+ *   无。
+ * 作用：
+ *   在不改变固定样本格式长度的前提下复用同一帧结构发送版本和参数。
+ */
+static void app_build_meta_packet(sample_packet_t *pkt,
+                                  uint16_t flags,
+                                  uint16_t subtype,
+                                  int32_t payload0,
+                                  int32_t payload1,
+                                  int32_t payload2,
+                                  int32_t payload3)
+{
+  app_prepare_packet(pkt, flags, subtype, g_app.meta_sequence++);
+  pkt->raw_code = payload0;
+  pkt->filtered_code = payload1;
+  pkt->baseline_code = payload2;
+  pkt->corrected_code = payload3;
+}
+
+/* 函数说明：
+ *   构造一个故障状态帧。
+ * 输入：
+ *   pkt: 输出数据包指针。
+ *   flags: 当前故障帧标志。
+ * 输出：
+ *   无。
+ * 作用：
+ *   故障态沿用样本负载布局回传最近一次测量上下文，但不占用样本序列号。
+ */
+static void app_build_fault_packet(sample_packet_t *pkt, uint16_t flags)
+{
+  app_prepare_packet(pkt, flags, app_compose_status_word(), g_app.meta_sequence++);
+  pkt->raw_code = g_app.raw_code;
+  pkt->filtered_code = g_app.filtered_code;
+  pkt->baseline_code = g_app.baseline_code;
+  pkt->corrected_code = g_app.corrected_code;
+}
+
+/* 函数说明：
+ *   发送一组基线版本与参数帧。
+ * 输入：
+ *   send_info: 是否发送版本/签名信息帧。
+ *   send_params: 是否发送参数冻结信息帧。
+ * 输出：
+ *   无。
+ * 作用：
+ *   支持上电自动上报，也支持上位机通过命令重发基线描述。
+ */
+static void app_send_baseline_metadata(uint8_t send_info, uint8_t send_params)
+{
+  sample_packet_t pkt;
+  version_descriptor_t descriptor;
+
+  version_get_descriptor(&descriptor);
+
+  if (send_info != 0U)
+  {
+    app_build_meta_packet(&pkt,
+                          SAMPLE_FLAG_INFO_FRAME,
+                          APP_META_SUBTYPE_INFO,
+                          (int32_t)descriptor.semver_packed,
+                          (int32_t)descriptor.build_number,
+                          (int32_t)descriptor.packet_version,
+                          (int32_t)descriptor.param_signature);
+    g_app.last_usb_status = (uint8_t)usb_stream_enqueue(&pkt);
+  }
+
+  if (send_params != 0U)
+  {
+    app_build_meta_packet(&pkt,
+                          SAMPLE_FLAG_PARAM_FRAME,
+                          APP_META_SUBTYPE_PARAMS_TIMING,
+                          (int32_t)APP_SAMPLE_RATE_HZ,
+                          (int32_t)APP_BIAS_STABILIZE_MS,
+                          (int32_t)APP_DARK_CALIBRATION_SAMPLES,
+                          (int32_t)APP_DRDY_TIMEOUT_MS);
+    g_app.last_usb_status = (uint8_t)usb_stream_enqueue(&pkt);
+
+    app_build_meta_packet(&pkt,
+                          SAMPLE_FLAG_PARAM_FRAME,
+                          APP_META_SUBTYPE_PARAMS_ADC,
+                          (int32_t)APP_FILTER_ALPHA_SHIFT,
+                          (int32_t)APP_USB_QUEUE_DEPTH,
+                          (int32_t)(((uint32_t)APP_DAC_BIAS_CH2 << 16) | (uint32_t)APP_DAC_BIAS_CH1),
+                          (int32_t)descriptor.ads1220_default_config);
+    g_app.last_usb_status = (uint8_t)usb_stream_enqueue(&pkt);
+  }
+}
+
+/* 函数说明：
+ *   处理 CDC 接收回调置位的最小命令。
+ * 输入：
+ *   无。
+ * 输出：
+ *   无。
+ * 作用：
+ *   把异步命令请求收口到主循环里执行，避免在 USB 回调上下文里直接入队数据。
+ */
+static void app_process_pending_commands(void)
+{
+  uint32_t primask;
+  uint8_t command_flags;
+
+  primask = __get_PRIMASK();
+  __disable_irq();
+  command_flags = g_app.command_flags;
+  g_app.command_flags = APP_COMMAND_FLAG_NONE;
+  if (primask == 0U)
+  {
+    __enable_irq();
+  }
+
+  if (command_flags == APP_COMMAND_FLAG_NONE)
+  {
+    return;
+  }
+
+  app_send_baseline_metadata((uint8_t)(command_flags & APP_COMMAND_FLAG_INFO),
+                             (uint8_t)(command_flags & APP_COMMAND_FLAG_PARAMS));
 }
 
 /* 函数说明：
@@ -353,7 +530,7 @@ static void app_handle_fault_reporting(void)
   }
 
   g_app.last_fault_report_ms = HAL_GetTick();
-  app_build_packet(&pkt, (uint16_t)(g_app.fault_flags | SAMPLE_FLAG_FAULT_STATE | SAMPLE_FLAG_FAULT_REPORT));
+  app_build_fault_packet(&pkt, (uint16_t)(g_app.fault_flags | SAMPLE_FLAG_FAULT_STATE | SAMPLE_FLAG_FAULT_REPORT));
   g_app.last_usb_status = (uint8_t)usb_stream_enqueue(&pkt);
 }
 
@@ -372,6 +549,7 @@ void app_init(void)
   app_enable_cycle_counter();   // 启用 DWT 周期计数器以支持微秒级时间戳
   usb_stream_init();            // 初始化 USB 发送队列
   adc_protocol_init(&hspi1);    // 初始化 ADS1220 驱动，传入 SPI 句柄以供后续通信
+  g_app.command_flags = (uint8_t)(APP_COMMAND_FLAG_INFO | APP_COMMAND_FLAG_PARAMS);
   app_set_state(APP_STATE_INIT);// 设置初始状态，等待主循环调度
 }
 
@@ -597,7 +775,7 @@ static void app_handle_usb_flush_state(void)
 {
   sample_packet_t pkt;
 
-  app_build_packet(&pkt, 0U);
+  app_build_sample_packet(&pkt, 0U);
   g_app.last_usb_status = (uint8_t)usb_stream_enqueue(&pkt);
   app_set_state(APP_STATE_WAIT_TRIGGER);
 }
@@ -629,6 +807,7 @@ void app_run_once(void)
 {
   /* 主循环每次都顺带推动 USB 发送，避免队列长期堆积。 */
   usb_stream_service();
+  app_process_pending_commands();
 
   switch (g_app.state)
   {
@@ -706,4 +885,48 @@ void app_on_sample_tick_isr(void)
 void app_on_drdy_isr(void)
 {
   g_app.evt_drdy = 1U;
+}
+
+/* 函数说明：
+ *   处理上位机发来的最小命令字节。
+ * 输入：
+ *   data: 接收缓冲区。
+ *   length: 缓冲区长度。
+ * 输出：
+ *   无。
+ * 作用：
+ *   识别 I/P/B 查询命令，主循环会据此补发版本和参数元信息帧。
+ */
+void app_on_usb_command_rx(const uint8_t *data, uint32_t length)
+{
+  uint32_t i;
+
+  if ((data == NULL) || (length == 0U))
+  {
+    return;
+  }
+
+  for (i = 0U; i < length; ++i)
+  {
+    switch (data[i])
+    {
+      case APP_USB_COMMAND_INFO:
+      case 'i':
+        g_app.command_flags |= APP_COMMAND_FLAG_INFO;
+        break;
+
+      case APP_USB_COMMAND_PARAMS:
+      case 'p':
+        g_app.command_flags |= APP_COMMAND_FLAG_PARAMS;
+        break;
+
+      case APP_USB_COMMAND_BASELINE:
+      case 'b':
+        g_app.command_flags |= (uint8_t)(APP_COMMAND_FLAG_INFO | APP_COMMAND_FLAG_PARAMS);
+        break;
+
+      default:
+        break;
+    }
+  }
 }

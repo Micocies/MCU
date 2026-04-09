@@ -1096,6 +1096,9 @@
           <name>$PROJ_DIR$/../Core/Src/app.c</name>
         </file>
         <file>
+          <name>$PROJ_DIR$/../Core/Src/version.c</name>
+        </file>
+        <file>
           <name>$PROJ_DIR$/../Core/Src/adc_protocol.c</name>
         </file>
         <file>

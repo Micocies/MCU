@@ -33,7 +33,7 @@ extern "C" {
 
 /* USB 二进制帧包头和状态位定义。 */
 #define SAMPLE_PACKET_MAGIC               0xA55AU
-#define SAMPLE_PACKET_VERSION             1U
+#define SAMPLE_PACKET_VERSION             2U
 
 #define SAMPLE_FLAG_DRDY_TIMEOUT          0x0001U
 #define SAMPLE_FLAG_SPI_ERROR             0x0002U
@@ -41,6 +41,12 @@ extern "C" {
 #define SAMPLE_FLAG_USB_OVERFLOW          0x0008U
 #define SAMPLE_FLAG_FAULT_STATE           0x0010U
 #define SAMPLE_FLAG_FAULT_REPORT          0x0020U
+#define SAMPLE_FLAG_INFO_FRAME            0x0040U
+#define SAMPLE_FLAG_PARAM_FRAME           0x0080U
+
+#define APP_USB_COMMAND_INFO              'I'
+#define APP_USB_COMMAND_PARAMS            'P'
+#define APP_USB_COMMAND_BASELINE          'B'
 
 #ifdef __cplusplus
 }

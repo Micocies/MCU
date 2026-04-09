@@ -5,7 +5,8 @@
 #include "app_config.h"
 #include "usbd_cdc_if.h"
 
-/* FS 模式单包 64 字节，因此这里每次最多拼 2 帧 32 字节样本。 */
+/* FS 模式单包 64 字节，因此这里每次最多拼 2 帧 32 字节数据。
+ * 样本帧和元信息帧都复用同一条发送队列。 */
 #define USB_STREAM_MAX_CHUNK_BYTES (sizeof(sample_packet_t) * 2U)
 
 typedef struct

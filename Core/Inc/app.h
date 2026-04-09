@@ -43,6 +43,8 @@ void app_run_once(void);
 void app_on_sample_tick_isr(void);
 /* DRDY 外部中断只调用这个函数置位数据就绪事件。 */
 void app_on_drdy_isr(void);
+/* USB CDC 接收最小命令入口，当前识别 I/P/B 三类查询命令。 */
+void app_on_usb_command_rx(const uint8_t *data, uint32_t length);
 
 #ifdef __cplusplus
 }
