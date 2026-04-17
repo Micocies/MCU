@@ -60,6 +60,7 @@ typedef struct
 
 void diag_init(void);
 void diag_record_fault(diag_fault_code_t code, uint8_t protocol_status);
+void diag_count_fault(diag_fault_code_t code, uint8_t protocol_status);
 void diag_record_recovery(diag_recovery_action_t action, diag_recovery_result_t result);
 diag_reset_reason_t diag_get_reset_reason(void);
 uint32_t diag_get_fault_count(diag_fault_code_t code);

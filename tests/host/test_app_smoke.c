@@ -1,5 +1,6 @@
 #include "test_config.h"
 
+#include "adc_protocol.h"
 #include "app.h"
 #include "app_config.h"
 #include "diag.h"
@@ -61,6 +62,18 @@ static void run_recovered_startup_to_dark_calibration(void)
   TEST_ASSERT_EQ_INT(APP_STATE_WAIT_DRDY, app_test_get_state());
   complete_current_conversion(1000);
   TEST_ASSERT_EQ_INT(APP_STATE_DARK_CALIBRATE, app_test_get_state());
+}
+
+static void drain_aux_queue(void)
+{
+  uint32_t guard = 16U;
+
+  fake_usb_set_transmit_status(USBD_OK);
+  while ((usb_stream_test_get_aux_count() != 0U) && (guard != 0U))
+  {
+    usb_stream_service();
+    guard--;
+  }
 }
 
 /* 函数说明：
@@ -195,6 +208,19 @@ static void test_spi_timeout_recovers_by_retry(void)
   TEST_ASSERT_EQ_U32(0U, app_test_get_fault_flags());
 }
 
+static void test_init_spi_timeout_uses_timeout_fault_code(void)
+{
+  reset_app_test();
+  fake_hal_set_spi_status(HAL_TIMEOUT);
+
+  app_run_once();
+
+  TEST_ASSERT_EQ_INT(APP_STATE_RECOVER, app_test_get_state());
+  TEST_ASSERT_TRUE((app_test_get_fault_flags() & SAMPLE_FLAG_SPI_TIMEOUT) != 0U);
+  TEST_ASSERT_EQ_U32(1U, diag_get_fault_count(DIAG_FAULT_SPI_TIMEOUT));
+  TEST_ASSERT_EQ_U32(0U, diag_get_fault_count(DIAG_FAULT_SPI_ERROR));
+}
+
 static void test_config_mismatch_recovers_by_reconfigure(void)
 {
   reset_app_test();
@@ -215,6 +241,7 @@ static void test_repeated_recovery_failure_enters_fault_hold(void)
 {
   reset_app_test();
   run_startup_to_comm_wait();
+  drain_aux_queue();
 
   fake_hal_set_config_mismatch(1U);
   complete_current_conversion(1000);
@@ -230,6 +257,41 @@ static void test_repeated_recovery_failure_enters_fault_hold(void)
   TEST_ASSERT_EQ_INT(APP_STATE_FAULT, app_test_get_state());
   TEST_ASSERT_TRUE((app_test_get_fault_flags() & SAMPLE_FLAG_RECOVERY_FAILED) != 0U);
   TEST_ASSERT_EQ_U32(4U, diag_get_fault_count(DIAG_FAULT_CONFIG_MISMATCH));
+  TEST_ASSERT_EQ_U32(1U, diag_get_fault_count(DIAG_FAULT_RECOVERY_FAILED));
+}
+
+static void test_fault_packet_preserves_root_protocol_status(void)
+{
+  const sample_packet_t *sent;
+
+  test_repeated_recovery_failure_enters_fault_hold();
+
+  fake_usb_reset();
+  app_run_once();
+  sent = fake_usb_get_last_packets();
+
+  TEST_ASSERT_EQ_U32(1U, fake_usb_get_transmit_count());
+  TEST_ASSERT_EQ_U32(DIAG_FAULT_RECOVERY_FAILED, (uint32_t)sent[0].raw_code);
+  TEST_ASSERT_EQ_U32(ADC_PROTOCOL_ERR_CONFIG_MISMATCH, (uint32_t)(sent[0].reserved & 0xFFU));
+}
+
+static void test_fault_reporting_overflow_does_not_mask_root_fault(void)
+{
+  diag_snapshot_t snapshot;
+  uint32_t i;
+
+  test_repeated_recovery_failure_enters_fault_hold();
+
+  fake_usb_set_transmit_status(USBD_BUSY);
+  for (i = 0U; i <= APP_USB_AUX_QUEUE_DEPTH; ++i)
+  {
+    fake_hal_advance_tick(APP_FAULT_REPORT_INTERVAL_MS);
+    app_run_once();
+  }
+
+  diag_get_snapshot(&snapshot);
+  TEST_ASSERT_EQ_U32(DIAG_FAULT_RECOVERY_FAILED, (uint32_t)snapshot.last_fault);
+  TEST_ASSERT_TRUE(diag_get_fault_count(DIAG_FAULT_USB_BUSY_OVERFLOW) != 0U);
 }
 
 /* 函数说明：
@@ -275,7 +337,10 @@ void test_app_smoke_run(void)
   test_startup_reaches_dark_calibration_without_fault();
   test_drdy_timeout_recovers_by_reconfigure();
   test_spi_timeout_recovers_by_retry();
+  test_init_spi_timeout_uses_timeout_fault_code();
   test_config_mismatch_recovers_by_reconfigure();
   test_repeated_recovery_failure_enters_fault_hold();
+  test_fault_packet_preserves_root_protocol_status();
+  test_fault_reporting_overflow_does_not_mask_root_fault();
   test_calibration_then_run_enqueues_sample();
 }

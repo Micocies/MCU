@@ -290,12 +290,19 @@ static diag_fault_code_t app_fault_code_from_adc_status(adc_protocol_status_t st
   return DIAG_FAULT_SPI_ERROR;
 }
 
-static void app_record_usb_enqueue(usb_stream_enqueue_result_t result)
+static void app_record_usb_enqueue(usb_stream_enqueue_result_t result, bool preserve_fault_root)
 {
   g_app.last_usb_status = (uint8_t)result;
   if (result == USB_STREAM_ENQUEUE_OK_DROPPED_OLDEST)
   {
-    diag_record_fault(DIAG_FAULT_USB_BUSY_OVERFLOW, g_app.last_usb_status);
+    if (preserve_fault_root != false)
+    {
+      diag_count_fault(DIAG_FAULT_USB_BUSY_OVERFLOW, g_app.last_usb_status);
+    }
+    else
+    {
+      diag_record_fault(DIAG_FAULT_USB_BUSY_OVERFLOW, g_app.last_usb_status);
+    }
   }
 }
 
@@ -303,7 +310,7 @@ static void app_enter_fault_hold(uint16_t reason_flags)
 {
   g_app.fault_flags |= reason_flags;
   app_stop_timer();
-  g_app.last_adc_status = (uint8_t)adc_protocol_stop();
+  (void)adc_protocol_stop();
   g_app.evt_sample_tick = 0U;
   g_app.evt_drdy = 0U;
   g_app.last_fault_report_ms = HAL_GetTick() - APP_FAULT_REPORT_INTERVAL_MS;
@@ -326,6 +333,10 @@ static void app_schedule_recovery(diag_fault_code_t code, uint16_t reason_flags)
 
   if (decision.enter_fault_hold != 0U)
   {
+    if (code != DIAG_FAULT_INIT_FAILED)
+    {
+      diag_record_fault(DIAG_FAULT_RECOVERY_FAILED, g_app.last_adc_status);
+    }
     diag_record_recovery(DIAG_RECOVERY_ACTION_FAULT_HOLD, DIAG_RECOVERY_RESULT_FAILED);
     app_enter_fault_hold((uint16_t)(reason_flags | SAMPLE_FLAG_RECOVERY_FAILED));
     return;
@@ -494,7 +505,10 @@ static void app_build_fault_packet(sample_packet_t *pkt, uint16_t flags)
   diag_get_snapshot(&diag_snapshot);
   fault_policy_get_snapshot(&policy_snapshot);
 
-  app_prepare_packet(pkt, flags, app_compose_status_word(), g_app.meta_sequence++);
+  app_prepare_packet(pkt,
+                     flags,
+                     (uint16_t)(((uint16_t)g_app.last_usb_status << 8) | diag_snapshot.last_protocol_status),
+                     g_app.meta_sequence++);
   pkt->raw_code = (int32_t)diag_snapshot.last_fault;
   pkt->filtered_code = (int32_t)diag_get_fault_count(diag_snapshot.last_fault);
   pkt->baseline_code = (int32_t)(((uint32_t)diag_snapshot.reset_reason << 16) |
@@ -531,7 +545,7 @@ static void app_send_baseline_metadata(uint8_t send_info, uint8_t send_params)
                           (int32_t)descriptor.build_number,
                           (int32_t)descriptor.packet_version,
                           (int32_t)descriptor.param_signature);
-    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt));
+    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt), true);
   }
 
   if (send_params != 0U)
@@ -543,7 +557,7 @@ static void app_send_baseline_metadata(uint8_t send_info, uint8_t send_params)
                           (int32_t)APP_BIAS_STABILIZE_MS,
                           (int32_t)APP_DARK_CALIBRATION_SAMPLES,
                           (int32_t)APP_DRDY_TIMEOUT_MS);
-    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt));
+    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt), true);
 
     app_build_meta_packet(&pkt,
                           SAMPLE_FLAG_PARAM_FRAME,
@@ -552,7 +566,7 @@ static void app_send_baseline_metadata(uint8_t send_info, uint8_t send_params)
                           (int32_t)APP_USB_QUEUE_DEPTH,
                           (int32_t)(((uint32_t)APP_DAC_BIAS_CH2 << 16) | (uint32_t)APP_DAC_BIAS_CH1),
                           (int32_t)descriptor.ads1220_default_config);
-    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt));
+    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt), true);
 
     diag_get_snapshot(&diag_snapshot);
     app_build_meta_packet(&pkt,
@@ -563,7 +577,7 @@ static void app_send_baseline_metadata(uint8_t send_info, uint8_t send_params)
                           (int32_t)diag_snapshot.total_faults,
                           (int32_t)(((uint32_t)diag_snapshot.last_recovery_action << 16) |
                                     (uint32_t)diag_snapshot.last_recovery_result));
-    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt));
+    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt), true);
   }
 }
 
@@ -619,7 +633,7 @@ static void app_handle_fault_reporting(void)
 
   g_app.last_fault_report_ms = HAL_GetTick();
   app_build_fault_packet(&pkt, (uint16_t)(g_app.fault_flags | SAMPLE_FLAG_FAULT_STATE | SAMPLE_FLAG_FAULT_REPORT));
-  app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt));
+  app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt), true);
 }
 
 /* 函数说明：
@@ -663,7 +677,7 @@ static void app_handle_init_state(void)
   g_app.last_adc_status = (uint8_t)status;
   if (status != ADC_PROTOCOL_OK)
   {
-    app_schedule_recovery(DIAG_FAULT_SPI_ERROR,
+    app_schedule_recovery(app_fault_code_from_adc_status(status),
                           (uint16_t)(app_flags_from_adc_status(status) | SAMPLE_FLAG_COMM_CHECK_FAILED));
     return;
   }
@@ -672,7 +686,7 @@ static void app_handle_init_state(void)
   g_app.last_adc_status = (uint8_t)status;
   if (status != ADC_PROTOCOL_OK)
   {
-    app_schedule_recovery(DIAG_FAULT_SPI_ERROR,
+    app_schedule_recovery(app_fault_code_from_adc_status(status),
                           (uint16_t)(app_flags_from_adc_status(status) | SAMPLE_FLAG_COMM_CHECK_FAILED));
     return;
   }
@@ -872,7 +886,7 @@ static void app_handle_usb_flush_state(void)
   sample_packet_t pkt;
 
   app_build_sample_packet(&pkt, 0U);
-  app_record_usb_enqueue(usb_stream_enqueue_sample(&pkt));
+  app_record_usb_enqueue(usb_stream_enqueue_sample(&pkt), false);
   app_set_state(APP_STATE_WAIT_TRIGGER);
 }
 

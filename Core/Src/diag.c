@@ -66,6 +66,18 @@ void diag_record_fault(diag_fault_code_t code, uint8_t protocol_status)
   g_diag.last_protocol_status = protocol_status;
 }
 
+void diag_count_fault(diag_fault_code_t code, uint8_t protocol_status)
+{
+  if ((uint32_t)code >= (uint32_t)DIAG_FAULT_COUNT)
+  {
+    code = DIAG_FAULT_INIT_FAILED;
+  }
+
+  g_diag.total_faults++;
+  g_diag.fault_count[code]++;
+  (void)protocol_status;
+}
+
 void diag_record_recovery(diag_recovery_action_t action, diag_recovery_result_t result)
 {
   g_diag.last_recovery_action = action;
