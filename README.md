@@ -2,9 +2,13 @@
 
 基于 `STM32G431CBT`、`ADS1220` 和 `USB CDC` 的采样工程。
 
+当前工程版本：`v0.2.0`。
+
 当前工程采用“`CubeMX` 负责底层外设初始化，应用层负责状态机调度”的分层方式。系统主流程如下：
 
 `初始化 -> 偏置稳定 -> 通信自检 -> 暗态校准 -> 定时触发采样 -> DRDY 读数 -> 数据处理 -> USB 发送`
+
+V0.2 在 V0.1 的锁定式故障态基础上增加了细分故障码、故障计数、复位原因记录和自动恢复策略。恢复类故障会先进入 `APP_STATE_RECOVER`，连续恢复失败后才进入 `APP_STATE_FAULT` 故障保持态。
 
 ## 目录结构
 
@@ -16,6 +20,10 @@
   ADS1220 驱动层，负责 `RESET / START/SYNC / POWERDOWN / WREG / RREG / 读 3 字节 / 补码解析`
 - `Core/Src/usb_stream.c`
   USB CDC 发送层，负责样本/辅助双队列管理、32 字节帧打包和 64 字节 FS 包优先聚合发送
+- `Core/Src/diag.c`
+  诊断层，负责细分故障码计数、最近故障、最近恢复动作结果和复位原因记录
+- `Core/Src/fault_policy.c`
+  故障策略层，负责决定重试、重配或进入故障保持态
 - `Core/Src/stm32g4xx_it.c`
   中断入口，`EXTI0` 只置 `DRDY` 事件，`TIM6_DAC` 只置采样节拍事件，`USB_LP` 交给 Cube USB 设备栈
 - `USB_Device/App/usbd_cdc_if.c`
@@ -43,8 +51,10 @@
   执行滤波、基线扣除、序号和时间戳更新
 - `APP_STATE_USB_FLUSH`
   打包成 32 字节二进制帧并压入 USB 队列
+- `APP_STATE_RECOVER`
+  按细分故障码执行自动恢复动作，例如 SPI 重试或 ADC 复位重配
 - `APP_STATE_FAULT`
-  停止采样，周期性发送故障状态帧
+  停止采样，周期性发送故障状态帧；只有连续恢复失败或不可恢复初始化错误才进入
 
 ## 状态转换流程
 
@@ -71,7 +81,7 @@
   - 正常退出：
     - 全部初始化成功后进入 `APP_STATE_BIAS_STABILIZE`
   - 异常退出：
-    - 任一 ADC 配置失败或 DAC 启动失败，进入 `APP_STATE_FAULT`
+    - ADC 配置失败先进入 `APP_STATE_RECOVER`，连续恢复失败或 DAC 启动失败进入 `APP_STATE_FAULT`
 
 - `APP_STATE_BIAS_STABILIZE`
   - 进入条件：`APP_STATE_INIT` 成功完成
@@ -108,7 +118,7 @@
   - 正常退出：
     - 收到 `DRDY` 后进入 `APP_STATE_READ_SAMPLE`
   - 异常退出：
-    - 若超出 `APP_DRDY_TIMEOUT_MS` 仍未等到 `DRDY`，进入 `APP_STATE_FAULT`
+    - 若超出 `APP_DRDY_TIMEOUT_MS` 仍未等到 `DRDY`，进入 `APP_STATE_RECOVER`
     - 如果当前是通信自检模式，还会额外打上 `SAMPLE_FLAG_COMM_CHECK_FAILED`
 
 - `APP_STATE_READ_SAMPLE`
@@ -118,7 +128,7 @@
   - 正常退出：
     - SPI 读数成功后进入 `APP_STATE_PROCESS_SAMPLE`
   - 异常退出：
-    - SPI 读数失败则进入 `APP_STATE_FAULT`
+    - SPI 读数失败则进入 `APP_STATE_RECOVER`
     - 如果当前是通信自检模式，还会额外打上 `SAMPLE_FLAG_COMM_CHECK_FAILED`
 
 - `APP_STATE_PROCESS_SAMPLE`
@@ -129,14 +139,14 @@
   - 自检分支：
     - 调用 `adc_protocol_link_check()` 回读 ADS1220 配置寄存器
     - 如果回读结果和期望寄存器镜像一致，说明通信链路正常，进入 `APP_STATE_DARK_CALIBRATE`
-    - 如果回读失败或不一致，进入 `APP_STATE_FAULT`
+    - 如果回读失败或不一致，进入 `APP_STATE_RECOVER`
 
 因此，自检阶段的结论很明确：
 
 - 自检成功：
   `APP_STATE_PROCESS_SAMPLE -> APP_STATE_DARK_CALIBRATE`
 - 自检失败：
-  `APP_STATE_PROCESS_SAMPLE -> APP_STATE_FAULT`
+  `APP_STATE_PROCESS_SAMPLE -> APP_STATE_RECOVER -> APP_STATE_BIAS_STABILIZE / APP_STATE_FAULT`
 
 ### 3. 暗态校准阶段
 
@@ -222,24 +232,29 @@
 
 ### 5. 故障阶段
 
-任意阶段只要发现关键错误，都会统一调用 `app_enter_fault()` 进入 `APP_STATE_FAULT`。
+任意阶段发现关键错误时，V0.2 会先把底层状态映射为 `diag_fault_code_t`，再交给 `fault_policy` 决定是否自动恢复。只有超过恢复阈值或遇到不可恢复初始化错误时，才进入 `APP_STATE_FAULT`。
 
-当前实现中的故障来源主要包括：
+当前实现中的典型故障来源主要包括：
 
 - `APP_STATE_INIT` 中 ADC 或 DAC 初始化失败
 - `APP_STATE_WAIT_DRDY` 中等待 `DRDY` 超时
 - `APP_STATE_READ_SAMPLE` 中 SPI 读数失败
 - `APP_STATE_PROCESS_SAMPLE` 中通信自检失败
+- `usb_stream` 样本或辅助队列溢出
 - `switch` 落入默认分支
 
-`app_enter_fault()` 会做以下动作：
+自动恢复策略：
 
-- 记录故障标志位
-- 停止 `TIM6`
-- 调用 `adc_protocol_stop()` 停止 ADS1220 转换
-- 清空 `evt_sample_tick` 和 `evt_drdy`
-- 设置 `last_fault_report_ms`
-- 切换状态到 `APP_STATE_FAULT`
+- `SPI timeout`
+  重新发起当前流水线转换，最多 `APP_RECOVERY_SPI_RETRY_LIMIT` 次
+- `config mismatch`
+  执行 `reset + configure + link_check`，成功后回到 `BIAS_STABILIZE`，重新自检和校准
+- `DRDY timeout`
+  按 ADC 重配策略恢复
+- `usb busy overflow`
+  不拉停采样，仅记录 `DIAG_FAULT_USB_BUSY_OVERFLOW` 并在保留的新帧置 `SAMPLE_FLAG_USB_OVERFLOW`
+- 连续恢复失败超过 `APP_RECOVERY_HOLD_THRESHOLD`
+  进入 `APP_STATE_FAULT`
 
 进入 `APP_STATE_FAULT` 后：
 
@@ -247,11 +262,11 @@
 - 只通过 `app_handle_fault_reporting()` 周期性构造故障帧
 - 故障帧继续通过 `usb_stream_enqueue_aux()` 进入辅助发送队列
 
-也就是说，当前版本的故障态是“锁定式故障态”：
+也就是说，当前版本的故障态是“恢复失败后的保持态”：
 
-- 会保留故障信息
+- 会保留最近故障码、计数、复位原因和恢复动作结果
 - 会周期性上报
-- 不会自动重试恢复
+- 不再自动重试，等待外部复位或人工处理
 
 ### 6. 一张简化的跳转图
 
@@ -262,7 +277,7 @@
 从 `PROCESS_SAMPLE` 分三路：
 
 - 自检成功：`PROCESS_SAMPLE -> DARK_CALIBRATE`
-- 自检失败：`PROCESS_SAMPLE -> FAULT`
+- 自检失败：`PROCESS_SAMPLE -> RECOVER -> BIAS_STABILIZE / FAULT`
 - 非自检模式：按 `pipeline_mode` 进入校准或运行闭环
 
 校准闭环：
@@ -275,7 +290,8 @@
 
 异常收口：
 
-- `INIT / WAIT_DRDY / READ_SAMPLE / PROCESS_SAMPLE / default -> FAULT`
+- `WAIT_DRDY / READ_SAMPLE / PROCESS_SAMPLE -> RECOVER`
+- `RECOVER / INIT / default -> FAULT`，仅在连续恢复失败或不可恢复错误时进入
 
 ## ADS1220 接口约定
 
@@ -461,6 +477,10 @@
 - `APP_DRDY_TIMEOUT_MS`
 - `APP_FILTER_ALPHA_SHIFT`
 - `APP_USB_QUEUE_DEPTH`
+- `APP_RECOVERY_SPI_RETRY_LIMIT`
+- `APP_RECOVERY_RECONFIGURE_LIMIT`
+- `APP_RECOVERY_HOLD_THRESHOLD`
+- `APP_ADC_LINK_CHECK_RETRIES`
 - `APP_DAC_BIAS_CH1`
 - `APP_DAC_BIAS_CH2`
 
@@ -490,5 +510,11 @@
 
 - 温度模式解析尚未单独实现，当前按普通 24 位模拟输入结果处理
 - 项目当前未使用 DMA，SPI 和 USB 都由主循环轮询推进
-- 故障态默认不自动恢复，只周期性发送故障状态帧
+- 自动恢复只覆盖单设备、无 DMA、无帧协议的 V0.2 范围；多设备仲裁和更复杂的主机协议仍未实现
+
+## V0.2 交付物
+
+- 故障码表：`docs/fault_codes.md`
+- 恢复状态机图：`docs/recovery_state_machine.md`
+- 异常注入测试记录：`docs/fault_injection_v0.2.0.md`
 

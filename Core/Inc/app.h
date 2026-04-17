@@ -31,7 +31,9 @@ typedef enum
   APP_STATE_PROCESS_SAMPLE,
   /* 把结果封装成二进制帧并送入USB队列 */
   APP_STATE_USB_FLUSH,
-  /* 进入故障保持态，只上报状态，不自动恢复。 */
+  /* 执行一次自动恢复动作，成功后回到启动/采样链路。 */
+  APP_STATE_RECOVER,
+  /* 进入故障保持态，只上报状态，等待人工干预或复位。 */
   APP_STATE_FAULT
 } app_state_t;
 

@@ -145,6 +145,7 @@ static void test_two_sample_packets_batch_to_64_bytes(void)
 static void test_usb_busy_keeps_packet_for_retry(void)
 {
   sample_packet_t pkt = make_packet(3U, 300, 0U);
+  usb_stream_stats_t stats;
 
   reset_stream_test();
 
@@ -155,12 +156,41 @@ static void test_usb_busy_keeps_packet_for_retry(void)
 
   TEST_ASSERT_EQ_U32(1U, fake_usb_get_transmit_count());
   TEST_ASSERT_EQ_U32(1U, usb_stream_test_get_sample_count());
+  usb_stream_get_stats(&stats);
+  TEST_ASSERT_EQ_U32(1U, stats.tx_busy);
 
   fake_usb_set_transmit_status(USBD_OK);
   usb_stream_service();
 
   TEST_ASSERT_EQ_U32(2U, fake_usb_get_transmit_count());
   TEST_ASSERT_EQ_U32(0U, usb_stream_test_get_sample_count());
+}
+
+static void test_sample_overflow_records_stats_and_flag(void)
+{
+  sample_packet_t pkt;
+  usb_stream_stats_t stats;
+  uint32_t i;
+
+  reset_stream_test();
+
+  for (i = 0U; i <= APP_USB_QUEUE_DEPTH; ++i)
+  {
+    pkt = make_packet(i, (int32_t)i, 0U);
+    (void)usb_stream_enqueue_sample(&pkt);
+  }
+
+  fake_hal_advance_tick(APP_USB_BATCH_MAX_WAIT_MS);
+  usb_stream_get_stats(&stats);
+  TEST_ASSERT_EQ_U32(1U, stats.sample_overflow);
+  TEST_ASSERT_EQ_U32(APP_USB_QUEUE_DEPTH, usb_stream_test_get_sample_count());
+
+  for (i = 0U; i < (APP_USB_QUEUE_DEPTH / 2U); ++i)
+  {
+    usb_stream_service();
+  }
+  TEST_ASSERT_EQ_U32(APP_USB_QUEUE_DEPTH / 2U, fake_usb_get_transmit_count());
+  TEST_ASSERT_TRUE((fake_usb_get_last_packets()[1].flags & SAMPLE_FLAG_USB_OVERFLOW) != 0U);
 }
 
 /* 函数说明：
@@ -219,5 +249,6 @@ void test_usb_stream_run(void)
   test_single_packet_waits_then_flushes();
   test_two_sample_packets_batch_to_64_bytes();
   test_usb_busy_keeps_packet_for_retry();
+  test_sample_overflow_records_stats_and_flag();
   test_aux_queue_does_not_break_sample_sequence();
 }

@@ -12,6 +12,7 @@ static uint32_t g_tick_ms;
 static HAL_StatusTypeDef g_spi_status = HAL_OK;
 static HAL_StatusTypeDef g_spi_receive_status = HAL_OK;
 static HAL_StatusTypeDef g_dac_status = HAL_OK;
+static uint8_t g_config_mismatch;
 static uint32_t g_gpio_write_count;
 static uint32_t g_tim_start_count;
 static uint32_t g_tim_stop_count;
@@ -39,6 +40,7 @@ void fake_hal_reset(void)
   g_spi_status = HAL_OK;
   g_spi_receive_status = HAL_OK;
   g_dac_status = HAL_OK;
+  g_config_mismatch = 0U;
   g_gpio_write_count = 0U;
   g_tim_start_count = 0U;
   g_tim_stop_count = 0U;
@@ -103,6 +105,11 @@ void fake_hal_set_spi_status(HAL_StatusTypeDef status)
 void fake_hal_set_spi_receive_status(HAL_StatusTypeDef status)
 {
   g_spi_receive_status = status;
+}
+
+void fake_hal_set_config_mismatch(uint8_t enabled)
+{
+  g_config_mismatch = enabled;
 }
 
 /* 函数说明：
@@ -292,7 +299,7 @@ HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *hspi,
     if ((pTxData != 0) && (Size == (uint16_t)(1U + ADS1220_REG_COUNT)) &&
         (pTxData[0] == ADS1220_CMD_RREG(ADS1220_REG_CONFIG0, ADS1220_REG_COUNT)))
     {
-      pRxData[1] = ADS1220_DEFAULT_CONFIG0;
+      pRxData[1] = (g_config_mismatch == 0U) ? ADS1220_DEFAULT_CONFIG0 : (uint8_t)(ADS1220_DEFAULT_CONFIG0 ^ 0x01U);
       pRxData[2] = ADS1220_DEFAULT_CONFIG1;
       pRxData[3] = ADS1220_DEFAULT_CONFIG2;
       pRxData[4] = ADS1220_DEFAULT_CONFIG3;

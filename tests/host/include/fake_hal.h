@@ -71,6 +71,7 @@ void fake_hal_set_tick(uint32_t tick);
 void fake_hal_advance_tick(uint32_t delta_ms);
 void fake_hal_set_spi_status(HAL_StatusTypeDef status);
 void fake_hal_set_spi_receive_status(HAL_StatusTypeDef status);
+void fake_hal_set_config_mismatch(uint8_t enabled);
 void fake_hal_queue_spi_receive_raw24(int32_t raw_code);
 void fake_hal_set_dac_status(HAL_StatusTypeDef status);
 uint32_t fake_hal_get_gpio_write_count(void);

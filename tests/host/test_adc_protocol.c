@@ -1,6 +1,7 @@
 #include "test_config.h"
 
 #include "adc_protocol.h"
+#include "app_config.h"
 #include "fake_hal.h"
 #include "test_assert.h"
 
@@ -100,6 +101,24 @@ static void test_configure_writes_expected_sequence(void)
   TEST_ASSERT_EQ_U32(0x44U, tx[4]);
 }
 
+static void test_link_check_records_mismatch_retries(void)
+{
+  SPI_HandleTypeDef spi;
+  adc_protocol_link_stats_t stats;
+
+  fake_hal_reset();
+  adc_protocol_init(&spi);
+  fake_hal_set_config_mismatch(1U);
+
+  TEST_ASSERT_EQ_INT(ADC_PROTOCOL_ERR_CONFIG_MISMATCH, adc_protocol_link_check(0));
+  adc_protocol_get_link_stats(&stats);
+
+  TEST_ASSERT_EQ_U32(1U, stats.total_checks);
+  TEST_ASSERT_EQ_U32(APP_ADC_LINK_CHECK_RETRIES, stats.retries);
+  TEST_ASSERT_EQ_U32(APP_ADC_LINK_CHECK_RETRIES + 1U, stats.mismatches);
+  TEST_ASSERT_EQ_INT(ADC_PROTOCOL_ERR_CONFIG_MISMATCH, stats.last_status);
+}
+
 /* 函数说明：
  *   执行 adc_protocol 测试组。
  * 输入：
@@ -115,4 +134,5 @@ void test_adc_protocol_run(void)
   test_code_to_voltage_boundaries();
   test_spi_error_mapping();
   test_configure_writes_expected_sequence();
+  test_link_check_records_mismatch_retries();
 }

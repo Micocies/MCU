@@ -26,7 +26,7 @@ void version_get_descriptor(version_descriptor_t *descriptor)
 
   descriptor->semver_packed = 0x00000100UL;
   descriptor->build_number = 1U;
-  descriptor->packet_version = 2U;
+  descriptor->packet_version = 3U;
   descriptor->param_signature = 0x12345678UL;
   descriptor->ads1220_default_config = 0x00100408UL;
 }

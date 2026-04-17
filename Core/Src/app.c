@@ -49,8 +49,8 @@
  *
  * 异常路径：
  *   任意阶段发现超时、SPI 错误或配置回读失败
- *    -> APP_STATE_FAULT
- *    -> 停止 TIM6、停止 ADC 转换、周期性发送故障帧
+ *    -> APP_STATE_RECOVER
+ *    -> 按策略重试或重配；连续失败后进入 APP_STATE_FAULT
  *
  * 模块分工：
  *   main.c         : CubeMX 外设初始化 + 主循环入口
@@ -66,6 +66,8 @@
 
 #include "adc_protocol.h"
 #include "app_config.h"
+#include "diag.h"
+#include "fault_policy.h"
 #include "main.h"
 #include "usb_stream.h"
 #include "version.h"
@@ -93,7 +95,8 @@ typedef enum
 {
   APP_META_SUBTYPE_INFO = 0U,
   APP_META_SUBTYPE_PARAMS_TIMING = 1U,
-  APP_META_SUBTYPE_PARAMS_ADC = 2U
+  APP_META_SUBTYPE_PARAMS_ADC = 2U,
+  APP_META_SUBTYPE_DIAG_BOOT = 3U
 } app_meta_subtype_t;
 
 typedef struct
@@ -115,9 +118,12 @@ typedef struct
   int32_t baseline_code;            // 当前基线值（暗态均值）
   int32_t corrected_code;           // 当前扣除基线后的码值
   uint16_t fault_flags;             // 当前故障标志位，按位定义见 SAMPLE_FLAG_XXX
+  uint16_t recovery_fault_flags;     // 触发当前恢复动作的故障标志
   uint8_t filter_valid;             // 滤波器是否已初始化
   uint8_t last_adc_status;          // 最近一次 ADC 协议层状态码
   uint8_t last_usb_status;          // 最近一次 USB 入队结果码
+  diag_fault_code_t last_fault_code; // 最近一次细分故障码
+  diag_recovery_action_t recovery_action; // 当前待执行恢复动作
 } app_context_t;                    // 应用状态机上下文
 
 static app_context_t g_app;
@@ -254,16 +260,46 @@ static bool app_frontend_bias_start_default(void)
   return true;
 }
 
-/* 函数说明：
- *   统一进入故障状态。
- * 输入：
- *   reason_flags: 故障原因标志位。
- * 输出：
- *   无。
- * 作用：
- *   停止节拍与转换，清理事件，并保存故障原因。
- */
-static void app_enter_fault(uint16_t reason_flags)
+static uint16_t app_flags_from_adc_status(adc_protocol_status_t status)
+{
+  if (status == ADC_PROTOCOL_ERR_TIMEOUT)
+  {
+    return (uint16_t)(SAMPLE_FLAG_SPI_ERROR | SAMPLE_FLAG_SPI_TIMEOUT);
+  }
+
+  if (status == ADC_PROTOCOL_ERR_CONFIG_MISMATCH)
+  {
+    return SAMPLE_FLAG_CONFIG_MISMATCH;
+  }
+
+  return SAMPLE_FLAG_SPI_ERROR;
+}
+
+static diag_fault_code_t app_fault_code_from_adc_status(adc_protocol_status_t status)
+{
+  if (status == ADC_PROTOCOL_ERR_TIMEOUT)
+  {
+    return DIAG_FAULT_SPI_TIMEOUT;
+  }
+
+  if (status == ADC_PROTOCOL_ERR_CONFIG_MISMATCH)
+  {
+    return DIAG_FAULT_CONFIG_MISMATCH;
+  }
+
+  return DIAG_FAULT_SPI_ERROR;
+}
+
+static void app_record_usb_enqueue(usb_stream_enqueue_result_t result)
+{
+  g_app.last_usb_status = (uint8_t)result;
+  if (result == USB_STREAM_ENQUEUE_OK_DROPPED_OLDEST)
+  {
+    diag_record_fault(DIAG_FAULT_USB_BUSY_OVERFLOW, g_app.last_usb_status);
+  }
+}
+
+static void app_enter_fault_hold(uint16_t reason_flags)
 {
   g_app.fault_flags |= reason_flags;
   app_stop_timer();
@@ -272,6 +308,36 @@ static void app_enter_fault(uint16_t reason_flags)
   g_app.evt_drdy = 0U;
   g_app.last_fault_report_ms = HAL_GetTick() - APP_FAULT_REPORT_INTERVAL_MS;
   app_set_state(APP_STATE_FAULT);
+}
+
+static void app_schedule_recovery(diag_fault_code_t code, uint16_t reason_flags)
+{
+  fault_policy_decision_t decision;
+
+  g_app.last_fault_code = code;
+  g_app.fault_flags |= reason_flags;
+  diag_record_fault(code, g_app.last_adc_status);
+  decision = fault_policy_on_fault(code);
+
+  if (decision.action == DIAG_RECOVERY_ACTION_NONE)
+  {
+    return;
+  }
+
+  if (decision.enter_fault_hold != 0U)
+  {
+    diag_record_recovery(DIAG_RECOVERY_ACTION_FAULT_HOLD, DIAG_RECOVERY_RESULT_FAILED);
+    app_enter_fault_hold((uint16_t)(reason_flags | SAMPLE_FLAG_RECOVERY_FAILED));
+    return;
+  }
+
+  g_app.recovery_action = decision.action;
+  g_app.recovery_fault_flags = reason_flags;
+  app_stop_timer();
+  (void)adc_protocol_stop();
+  g_app.evt_sample_tick = 0U;
+  g_app.evt_drdy = 0U;
+  app_set_state(APP_STATE_RECOVER);
 }
 
 /* 函数说明：
@@ -293,8 +359,9 @@ static void app_begin_conversion(app_pipeline_mode_t pipeline_mode)
   g_app.last_adc_status = (uint8_t)status;
   if (status != ADC_PROTOCOL_OK)
   {
-    app_enter_fault(SAMPLE_FLAG_SPI_ERROR |
-                    ((pipeline_mode == APP_PIPELINE_COMM_CHECK) ? SAMPLE_FLAG_COMM_CHECK_FAILED : 0U));
+    app_schedule_recovery(app_fault_code_from_adc_status(status),
+                          (uint16_t)(app_flags_from_adc_status(status) |
+                                     ((pipeline_mode == APP_PIPELINE_COMM_CHECK) ? SAMPLE_FLAG_COMM_CHECK_FAILED : 0U)));
     return;
   }
   g_app.drdy_deadline_ms = HAL_GetTick() + APP_DRDY_TIMEOUT_MS;
@@ -421,11 +488,20 @@ static void app_build_meta_packet(sample_packet_t *pkt,
  */
 static void app_build_fault_packet(sample_packet_t *pkt, uint16_t flags)
 {
+  diag_snapshot_t diag_snapshot;
+  fault_policy_snapshot_t policy_snapshot;
+
+  diag_get_snapshot(&diag_snapshot);
+  fault_policy_get_snapshot(&policy_snapshot);
+
   app_prepare_packet(pkt, flags, app_compose_status_word(), g_app.meta_sequence++);
-  pkt->raw_code = g_app.raw_code;
-  pkt->filtered_code = g_app.filtered_code;
-  pkt->baseline_code = g_app.baseline_code;
-  pkt->corrected_code = g_app.corrected_code;
+  pkt->raw_code = (int32_t)diag_snapshot.last_fault;
+  pkt->filtered_code = (int32_t)diag_get_fault_count(diag_snapshot.last_fault);
+  pkt->baseline_code = (int32_t)(((uint32_t)diag_snapshot.reset_reason << 16) |
+                                 ((uint32_t)diag_snapshot.last_recovery_action << 8) |
+                                 (uint32_t)diag_snapshot.last_recovery_result);
+  pkt->corrected_code = (int32_t)(((policy_snapshot.consecutive_failures & 0xFFFFUL) << 16) |
+                                  (policy_snapshot.recovery_attempts & 0xFFFFUL));
 }
 
 /* 函数说明：
@@ -442,6 +518,7 @@ static void app_send_baseline_metadata(uint8_t send_info, uint8_t send_params)
 {
   sample_packet_t pkt;
   version_descriptor_t descriptor;
+  diag_snapshot_t diag_snapshot;
 
   version_get_descriptor(&descriptor);
 
@@ -454,7 +531,7 @@ static void app_send_baseline_metadata(uint8_t send_info, uint8_t send_params)
                           (int32_t)descriptor.build_number,
                           (int32_t)descriptor.packet_version,
                           (int32_t)descriptor.param_signature);
-    g_app.last_usb_status = (uint8_t)usb_stream_enqueue_aux(&pkt);
+    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt));
   }
 
   if (send_params != 0U)
@@ -466,7 +543,7 @@ static void app_send_baseline_metadata(uint8_t send_info, uint8_t send_params)
                           (int32_t)APP_BIAS_STABILIZE_MS,
                           (int32_t)APP_DARK_CALIBRATION_SAMPLES,
                           (int32_t)APP_DRDY_TIMEOUT_MS);
-    g_app.last_usb_status = (uint8_t)usb_stream_enqueue_aux(&pkt);
+    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt));
 
     app_build_meta_packet(&pkt,
                           SAMPLE_FLAG_PARAM_FRAME,
@@ -475,7 +552,18 @@ static void app_send_baseline_metadata(uint8_t send_info, uint8_t send_params)
                           (int32_t)APP_USB_QUEUE_DEPTH,
                           (int32_t)(((uint32_t)APP_DAC_BIAS_CH2 << 16) | (uint32_t)APP_DAC_BIAS_CH1),
                           (int32_t)descriptor.ads1220_default_config);
-    g_app.last_usb_status = (uint8_t)usb_stream_enqueue_aux(&pkt);
+    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt));
+
+    diag_get_snapshot(&diag_snapshot);
+    app_build_meta_packet(&pkt,
+                          (uint16_t)(SAMPLE_FLAG_DIAG_FRAME | SAMPLE_FLAG_PARAM_FRAME),
+                          APP_META_SUBTYPE_DIAG_BOOT,
+                          (int32_t)diag_snapshot.reset_reason,
+                          (int32_t)diag_snapshot.last_fault,
+                          (int32_t)diag_snapshot.total_faults,
+                          (int32_t)(((uint32_t)diag_snapshot.last_recovery_action << 16) |
+                                    (uint32_t)diag_snapshot.last_recovery_result));
+    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt));
   }
 }
 
@@ -531,7 +619,7 @@ static void app_handle_fault_reporting(void)
 
   g_app.last_fault_report_ms = HAL_GetTick();
   app_build_fault_packet(&pkt, (uint16_t)(g_app.fault_flags | SAMPLE_FLAG_FAULT_STATE | SAMPLE_FLAG_FAULT_REPORT));
-  g_app.last_usb_status = (uint8_t)usb_stream_enqueue_aux(&pkt);
+  app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt));
 }
 
 /* 函数说明：
@@ -546,6 +634,8 @@ static void app_handle_fault_reporting(void)
 void app_init(void)
 {
   memset(&g_app, 0, sizeof(g_app));
+  diag_init();                    // 捕获本次启动的复位原因并清空诊断计数
+  fault_policy_init();            // 清空恢复策略的连续失败状态
   app_enable_cycle_counter();   // 启用 DWT 周期计数器以支持微秒级时间戳
   usb_stream_init();            // 初始化 USB 发送队列
   adc_protocol_init(&hspi1);    // 初始化 ADS1220 驱动，传入 SPI 句柄以供后续通信
@@ -573,7 +663,8 @@ static void app_handle_init_state(void)
   g_app.last_adc_status = (uint8_t)status;
   if (status != ADC_PROTOCOL_OK)
   {
-    app_enter_fault(SAMPLE_FLAG_COMM_CHECK_FAILED);
+    app_schedule_recovery(DIAG_FAULT_SPI_ERROR,
+                          (uint16_t)(app_flags_from_adc_status(status) | SAMPLE_FLAG_COMM_CHECK_FAILED));
     return;
   }
 
@@ -581,13 +672,15 @@ static void app_handle_init_state(void)
   g_app.last_adc_status = (uint8_t)status;
   if (status != ADC_PROTOCOL_OK)
   {
-    app_enter_fault(SAMPLE_FLAG_COMM_CHECK_FAILED);
+    app_schedule_recovery(DIAG_FAULT_SPI_ERROR,
+                          (uint16_t)(app_flags_from_adc_status(status) | SAMPLE_FLAG_COMM_CHECK_FAILED));
     return;
   }
 
   if (!app_frontend_bias_start_default())
   {
-    app_enter_fault(SAMPLE_FLAG_FAULT_STATE);
+    g_app.last_adc_status = ADC_PROTOCOL_OK;
+    app_schedule_recovery(DIAG_FAULT_INIT_FAILED, SAMPLE_FLAG_FAULT_STATE);
     return;
   }
 
@@ -683,8 +776,9 @@ static void app_handle_wait_drdy_state(void)
   }
   else if ((int32_t)(HAL_GetTick() - g_app.drdy_deadline_ms) >= 0)
   {
-    app_enter_fault(SAMPLE_FLAG_DRDY_TIMEOUT |
-                    ((g_app.pipeline_mode == APP_PIPELINE_COMM_CHECK) ? SAMPLE_FLAG_COMM_CHECK_FAILED : 0U));
+    app_schedule_recovery(DIAG_FAULT_DRDY_TIMEOUT,
+                          (uint16_t)(SAMPLE_FLAG_DRDY_TIMEOUT |
+                                     ((g_app.pipeline_mode == APP_PIPELINE_COMM_CHECK) ? SAMPLE_FLAG_COMM_CHECK_FAILED : 0U)));
   }
 }
 
@@ -705,8 +799,9 @@ static void app_handle_read_sample_state(void)
   g_app.last_adc_status = (uint8_t)status;
   if (status != ADC_PROTOCOL_OK)
   {
-    app_enter_fault(SAMPLE_FLAG_SPI_ERROR |
-                    ((g_app.pipeline_mode == APP_PIPELINE_COMM_CHECK) ? SAMPLE_FLAG_COMM_CHECK_FAILED : 0U));
+    app_schedule_recovery(app_fault_code_from_adc_status(status),
+                          (uint16_t)(app_flags_from_adc_status(status) |
+                                     ((g_app.pipeline_mode == APP_PIPELINE_COMM_CHECK) ? SAMPLE_FLAG_COMM_CHECK_FAILED : 0U)));
     return;
   }
 
@@ -734,7 +829,8 @@ static void app_handle_process_sample_state(void)
     g_app.last_adc_status = (uint8_t)status;
     if (status != ADC_PROTOCOL_OK)
     {
-      app_enter_fault(SAMPLE_FLAG_COMM_CHECK_FAILED);
+      app_schedule_recovery(app_fault_code_from_adc_status(status),
+                            (uint16_t)(app_flags_from_adc_status(status) | SAMPLE_FLAG_COMM_CHECK_FAILED));
     }
     else
     {
@@ -776,8 +872,81 @@ static void app_handle_usb_flush_state(void)
   sample_packet_t pkt;
 
   app_build_sample_packet(&pkt, 0U);
-  g_app.last_usb_status = (uint8_t)usb_stream_enqueue_sample(&pkt);
+  app_record_usb_enqueue(usb_stream_enqueue_sample(&pkt));
   app_set_state(APP_STATE_WAIT_TRIGGER);
+}
+
+static void app_finish_recovery(diag_recovery_action_t action, bool success)
+{
+  diag_record_recovery(action, (success != false) ? DIAG_RECOVERY_RESULT_SUCCESS : DIAG_RECOVERY_RESULT_FAILED);
+  fault_policy_record_recovery_result(action, success);
+}
+
+static void app_handle_recover_state(void)
+{
+  adc_protocol_status_t status;
+  diag_recovery_action_t action = g_app.recovery_action;
+
+  if (action == DIAG_RECOVERY_ACTION_SPI_RETRY)
+  {
+    g_app.evt_drdy = 0U;
+    status = adc_protocol_start_conversion();
+    g_app.last_adc_status = (uint8_t)status;
+    if (status != ADC_PROTOCOL_OK)
+    {
+      app_finish_recovery(action, false);
+      app_schedule_recovery(app_fault_code_from_adc_status(status),
+                            (uint16_t)(app_flags_from_adc_status(status) |
+                                       g_app.recovery_fault_flags |
+                                       SAMPLE_FLAG_RECOVERY_ACTIVE));
+      return;
+    }
+
+    g_app.fault_flags = 0U;
+    g_app.recovery_fault_flags = 0U;
+    g_app.recovery_action = DIAG_RECOVERY_ACTION_NONE;
+    app_finish_recovery(action, true);
+    g_app.drdy_deadline_ms = HAL_GetTick() + APP_DRDY_TIMEOUT_MS;
+    app_set_state(APP_STATE_WAIT_DRDY);
+    return;
+  }
+
+  if (action == DIAG_RECOVERY_ACTION_ADC_RECONFIGURE)
+  {
+    status = adc_protocol_reset();
+    if (status == ADC_PROTOCOL_OK)
+    {
+      status = adc_protocol_configure_default();
+    }
+    if (status == ADC_PROTOCOL_OK)
+    {
+      status = adc_protocol_link_check(g_app.raw_code);
+    }
+
+    g_app.last_adc_status = (uint8_t)status;
+    if (status != ADC_PROTOCOL_OK)
+    {
+      app_finish_recovery(action, false);
+      app_schedule_recovery(app_fault_code_from_adc_status(status),
+                            (uint16_t)(app_flags_from_adc_status(status) |
+                                       g_app.recovery_fault_flags |
+                                       SAMPLE_FLAG_RECOVERY_ACTIVE |
+                                       SAMPLE_FLAG_RECOVERY_FAILED));
+      return;
+    }
+
+    g_app.fault_flags = 0U;
+    g_app.recovery_fault_flags = 0U;
+    g_app.recovery_action = DIAG_RECOVERY_ACTION_NONE;
+    g_app.pipeline_mode = APP_PIPELINE_COMM_CHECK;
+    g_app.filter_valid = 0U;
+    app_finish_recovery(action, true);
+    app_set_state(APP_STATE_BIAS_STABILIZE);
+    return;
+  }
+
+  app_finish_recovery(action, false);
+  app_enter_fault_hold((uint16_t)(g_app.fault_flags | SAMPLE_FLAG_RECOVERY_FAILED));
 }
 
 /* 函数说明：
@@ -847,12 +1016,16 @@ void app_run_once(void)
       app_handle_usb_flush_state();
       break;
 
+    case APP_STATE_RECOVER:
+      app_handle_recover_state();
+      break;
+
     case APP_STATE_FAULT:
       app_handle_fault_state();
       break;
 
     default:
-      app_enter_fault(SAMPLE_FLAG_FAULT_STATE);
+      app_enter_fault_hold(SAMPLE_FLAG_FAULT_STATE);
       break;
   }
 

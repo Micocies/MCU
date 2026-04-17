@@ -34,6 +34,18 @@ typedef enum
   ADC_PROTOCOL_ERR_CONFIG_MISMATCH
 } adc_protocol_status_t;
 
+typedef struct
+{
+  uint32_t total_checks;
+  uint32_t successful_checks;
+  uint32_t read_errors;
+  uint32_t mismatches;
+  uint32_t retries;
+  adc_protocol_status_t last_status;
+  ads1220_config_t last_read_config;
+  ads1220_config_t expected_config;
+} adc_protocol_link_stats_t;
+
 /* ADS1220 普通转换结果固定输出 24 bit，MSB first。 */
 #define ADS1220_DATA_BYTES               3U
 
@@ -71,6 +83,8 @@ int32_t adc_protocol_parse_raw24(const uint8_t data[ADS1220_DATA_BYTES]);
 float adc_protocol_code_to_voltage(int32_t code, float vref, float gain);
 adc_protocol_status_t adc_protocol_read_sample(int32_t *raw_code);
 adc_protocol_status_t adc_protocol_link_check(int32_t raw_code);
+void adc_protocol_get_link_stats(adc_protocol_link_stats_t *stats);
+void adc_protocol_reset_link_stats(void);
 
 #ifdef __cplusplus
 }

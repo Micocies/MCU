@@ -15,6 +15,7 @@ static ads1220_config_t g_expected_config = {
     ADS1220_DEFAULT_CONFIG3
   }
 };
+static adc_protocol_link_stats_t g_link_stats;
 
 /* 函数说明：
  *   控制 ADS1220 片选信号。
@@ -113,6 +114,7 @@ static adc_protocol_status_t adc_protocol_transfer(const uint8_t *tx_buf,
 void adc_protocol_init(SPI_HandleTypeDef *hspi)
 {
   g_spi = hspi;
+  adc_protocol_reset_link_stats();
   adc_protocol_chip_select(GPIO_PIN_SET);
   /* START 和 RST 在空闲时保持默认电平，避免上电时误触发。 */
   HAL_GPIO_WritePin(ADC_START_GPIO_Port, ADC_START_Pin, GPIO_PIN_RESET);
@@ -432,22 +434,65 @@ adc_protocol_status_t adc_protocol_link_check(int32_t raw_code)
 {
   ads1220_config_t config;
   adc_protocol_status_t status;
+  uint32_t attempt;
 
   UNUSED(raw_code);
 
   /* 当前通信自检策略：
-   * 检查寄存器回读是否与期望配置一致，不对码值内容做强假设。 */
-  status = adc_protocol_read_config(&config);
-  if (status != ADC_PROTOCOL_OK)
+   * 检查寄存器回读是否与期望配置一致，不对码值内容做强假设。
+   * 短暂 SPI 抖动或回读毛刺允许有限重试，最终状态会进入统计。 */
+  g_link_stats.total_checks++;
+  g_link_stats.expected_config = g_expected_config;
+
+  for (attempt = 0U; attempt <= APP_ADC_LINK_CHECK_RETRIES; ++attempt)
   {
-    return status;
+    status = adc_protocol_read_config(&config);
+    g_link_stats.last_status = status;
+    if (status != ADC_PROTOCOL_OK)
+    {
+      g_link_stats.read_errors++;
+      if (attempt < APP_ADC_LINK_CHECK_RETRIES)
+      {
+        g_link_stats.retries++;
+        continue;
+      }
+      return status;
+    }
+
+    g_link_stats.last_read_config = config;
+    if (memcmp(&config, &g_expected_config, sizeof(config)) != 0)
+    {
+      g_link_stats.mismatches++;
+      g_link_stats.last_status = ADC_PROTOCOL_ERR_CONFIG_MISMATCH;
+      if (attempt < APP_ADC_LINK_CHECK_RETRIES)
+      {
+        g_link_stats.retries++;
+        continue;
+      }
+      return ADC_PROTOCOL_ERR_CONFIG_MISMATCH;
+    }
+
+    g_link_stats.successful_checks++;
+    g_link_stats.last_status = ADC_PROTOCOL_OK;
+    return ADC_PROTOCOL_OK;
   }
 
-  if (memcmp(&config, &g_expected_config, sizeof(config)) != 0)
-  {
-    return ADC_PROTOCOL_ERR_CONFIG_MISMATCH;
-  }
-
-  return ADC_PROTOCOL_OK;
+  g_link_stats.last_status = ADC_PROTOCOL_ERR_CONFIG_MISMATCH;
+  return ADC_PROTOCOL_ERR_CONFIG_MISMATCH;
 }
 
+void adc_protocol_get_link_stats(adc_protocol_link_stats_t *stats)
+{
+  if (stats == NULL)
+  {
+    return;
+  }
+
+  *stats = g_link_stats;
+}
+
+void adc_protocol_reset_link_stats(void)
+{
+  memset(&g_link_stats, 0, sizeof(g_link_stats));
+  g_link_stats.expected_config = g_expected_config;
+}

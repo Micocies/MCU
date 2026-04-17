@@ -1096,6 +1096,12 @@
           <name>$PROJ_DIR$/../Core/Src/app.c</name>
         </file>
         <file>
+          <name>$PROJ_DIR$/../Core/Src/diag.c</name>
+        </file>
+        <file>
+          <name>$PROJ_DIR$/../Core/Src/fault_policy.c</name>
+        </file>
+        <file>
           <name>$PROJ_DIR$/../Core/Src/version.c</name>
         </file>
         <file>

@@ -17,9 +17,9 @@ typedef struct
 } version_descriptor_t;
 
 #define FW_VERSION_MAJOR                0U
-#define FW_VERSION_MINOR                1U
+#define FW_VERSION_MINOR                2U
 #define FW_VERSION_PATCH                0U
-#define FW_BUILD_NUMBER                 1U
+#define FW_BUILD_NUMBER                 2U
 
 uint32_t version_get_semver_packed(void);
 uint32_t version_get_build_number(void);

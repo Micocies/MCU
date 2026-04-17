@@ -6,6 +6,8 @@ enable_testing()
 
 add_executable(host_tests
   ../Core/Src/adc_protocol.c
+  ../Core/Src/diag.c
+  ../Core/Src/fault_policy.c
   ../Core/Src/usb_stream.c
   ../Core/Src/app.c
   host/main.c

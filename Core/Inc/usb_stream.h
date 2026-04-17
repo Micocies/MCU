@@ -36,6 +36,18 @@ typedef enum
   USB_STREAM_ENQUEUE_ERR_INVALID_ARG
 } usb_stream_enqueue_result_t;
 
+typedef struct
+{
+  uint32_t sample_enqueued;
+  uint32_t aux_enqueued;
+  uint32_t sample_overflow;
+  uint32_t aux_overflow;
+  uint32_t tx_ok;
+  uint32_t tx_busy;
+  uint32_t tx_error;
+  uint8_t last_tx_status;
+} usb_stream_stats_t;
+
 /* 初始化 USB 发送队列。 */
 void usb_stream_init(void);
 /* 采样结果入队；样本队列满时仅影响样本帧。 */
@@ -44,6 +56,7 @@ usb_stream_enqueue_result_t usb_stream_enqueue_sample(const sample_packet_t *pkt
 usb_stream_enqueue_result_t usb_stream_enqueue_aux(const sample_packet_t *pkt);
 /* 尝试把队列头部数据送往 USB CDC。 */
 void usb_stream_service(void);
+void usb_stream_get_stats(usb_stream_stats_t *stats);
 
 #ifdef UNIT_TEST
 /* UNIT_TEST 下的只读队列观察口，正式固件构建中不暴露这些接口。 */

@@ -23,6 +23,7 @@ typedef struct
    * 生产者和消费者都在主循环上下文里访问，不支持 ISR 并发访问。 */
   usb_stream_ring_t sample_ring;
   usb_stream_ring_t aux_ring;
+  usb_stream_stats_t stats;
   uint8_t tx_buffer[USB_STREAM_MAX_CHUNK_BYTES];
   uint32_t sample_wait_start_ms;
 } usb_stream_context_t;
@@ -196,6 +197,11 @@ usb_stream_enqueue_result_t usb_stream_enqueue_sample(const sample_packet_t *pkt
   result = usb_stream_enqueue_internal(&g_usb_stream.sample_ring, APP_USB_QUEUE_DEPTH, pkt);
   if (result != USB_STREAM_ENQUEUE_ERR_INVALID_ARG)
   {
+    g_usb_stream.stats.sample_enqueued++;
+    if (result == USB_STREAM_ENQUEUE_OK_DROPPED_OLDEST)
+    {
+      g_usb_stream.stats.sample_overflow++;
+    }
     usb_stream_mark_sample_pending_start();
   }
   return result;
@@ -212,7 +218,18 @@ usb_stream_enqueue_result_t usb_stream_enqueue_sample(const sample_packet_t *pkt
  */
 usb_stream_enqueue_result_t usb_stream_enqueue_aux(const sample_packet_t *pkt)
 {
-  return usb_stream_enqueue_internal(&g_usb_stream.aux_ring, APP_USB_AUX_QUEUE_DEPTH, pkt);
+  usb_stream_enqueue_result_t result;
+
+  result = usb_stream_enqueue_internal(&g_usb_stream.aux_ring, APP_USB_AUX_QUEUE_DEPTH, pkt);
+  if (result != USB_STREAM_ENQUEUE_ERR_INVALID_ARG)
+  {
+    g_usb_stream.stats.aux_enqueued++;
+    if (result == USB_STREAM_ENQUEUE_OK_DROPPED_OLDEST)
+    {
+      g_usb_stream.stats.aux_overflow++;
+    }
+  }
+  return result;
 }
 
 /* 函数说明：
@@ -257,17 +274,37 @@ void usb_stream_service(void)
   usb_stream_copy_packets(active_ring, active_depth, packet_count);
 
   tx_status = CDC_Transmit_FS(g_usb_stream.tx_buffer, tx_len);
+  g_usb_stream.stats.last_tx_status = tx_status;
   if (tx_status != USBD_OK)
   {
+    if (tx_status == USBD_BUSY)
+    {
+      g_usb_stream.stats.tx_busy++;
+    }
+    else
+    {
+      g_usb_stream.stats.tx_error++;
+    }
     /* USB 忙时直接返回，等待下轮主循环继续尝试。 */
     return;
   }
 
+  g_usb_stream.stats.tx_ok++;
   usb_stream_pop_packets(active_ring, active_depth, packet_count);
   if ((active_ring == &g_usb_stream.sample_ring) && (g_usb_stream.sample_ring.count != 0U))
   {
     usb_stream_mark_sample_pending_start();
   }
+}
+
+void usb_stream_get_stats(usb_stream_stats_t *stats)
+{
+  if (stats == NULL)
+  {
+    return;
+  }
+
+  *stats = g_usb_stream.stats;
 }
 
 #ifdef UNIT_TEST

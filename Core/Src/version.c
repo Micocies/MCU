@@ -63,6 +63,10 @@ uint32_t version_get_param_signature(void)
   hash = version_hash_accumulate_u32_le(hash, APP_USB_QUEUE_DEPTH);
   hash = version_hash_accumulate_u32_le(hash, APP_DAC_BIAS_CH1);
   hash = version_hash_accumulate_u32_le(hash, APP_DAC_BIAS_CH2);
+  hash = version_hash_accumulate_u32_le(hash, APP_RECOVERY_SPI_RETRY_LIMIT);
+  hash = version_hash_accumulate_u32_le(hash, APP_RECOVERY_RECONFIGURE_LIMIT);
+  hash = version_hash_accumulate_u32_le(hash, APP_RECOVERY_HOLD_THRESHOLD);
+  hash = version_hash_accumulate_u32_le(hash, APP_ADC_LINK_CHECK_RETRIES);
   hash = version_hash_accumulate_u32_le(hash, version_get_ads1220_default_config());
   return hash;
 }
