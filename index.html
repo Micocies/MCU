@@ -1,10 +1,298 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Project Paper</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC",
+                         "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+            background: linear-gradient(180deg, #f6f8fb 0%, #eef2f7 100%);
+            color: #1f2937;
+            line-height: 1.6;
+        }
+
+        .container {
+            width: min(100%, 960px);
+            margin: 0 auto;
+            padding: 20px 16px 40px;
+        }
+
+        .hero {
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 24px;
+            padding: 28px 22px;
+            box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+            margin-bottom: 20px;
+        }
+
+        .tag {
+            display: inline-block;
+            font-size: 12px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #2563eb;
+            background: rgba(37, 99, 235, 0.08);
+            padding: 6px 10px;
+            border-radius: 999px;
+            margin-bottom: 14px;
+        }
+
+        h1 {
+            font-size: clamp(26px, 5vw, 42px);
+            line-height: 1.15;
+            font-weight: 700;
+            margin-bottom: 12px;
+            color: #0f172a;
+        }
+
+        .subtitle {
+            font-size: 15px;
+            color: #475569;
+            max-width: 760px;
+            margin-bottom: 22px;
+        }
+
+        .meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 24px;
+        }
+
+        .meta span {
+            font-size: 13px;
+            color: #334155;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            padding: 8px 12px;
+            border-radius: 999px;
+        }
+
+        .actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            text-decoration: none;
+            border-radius: 14px;
+            padding: 12px 18px;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.2s ease;
+        }
+
+        .btn-primary {
+            background: #0f172a;
+            color: #ffffff;
+        }
+
+        .btn-primary:hover {
+            background: #1e293b;
+            transform: translateY(-1px);
+        }
+
+        .btn-secondary {
+            background: #ffffff;
+            color: #0f172a;
+            border: 1px solid #cbd5e1;
+        }
+
+        .btn-secondary:hover {
+            background: #f8fafc;
+            transform: translateY(-1px);
+        }
+
+        .section {
+            background: rgba(255, 255, 255, 0.92);
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 22px;
+            padding: 22px 18px;
+            box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+            margin-bottom: 20px;
+        }
+
+        .section h2 {
+            font-size: 20px;
+            color: #0f172a;
+            margin-bottom: 14px;
+        }
+
+        .paper-info {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 14px;
+        }
+
+        .info-card {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            padding: 16px;
+        }
+
+        .info-card h3 {
+            font-size: 13px;
+            color: #64748b;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        .info-card p {
+            font-size: 15px;
+            color: #0f172a;
+            font-weight: 600;
+        }
+
+        .abstract {
+            font-size: 15px;
+            color: #475569;
+        }
+
+        .viewer-wrap {
+            overflow: hidden;
+            border-radius: 18px;
+            border: 1px solid #dbe4ee;
+            background: #ffffff;
+        }
+
+        .viewer-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 14px;
+            background: #f8fafc;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .viewer-top p {
+            font-size: 13px;
+            color: #64748b;
+        }
+
+        iframe {
+            width: 100%;
+            height: 78vh;
+            min-height: 520px;
+            border: none;
+            display: block;
+            background: #fff;
+        }
+
+        .tips {
+            margin-top: 14px;
+            font-size: 13px;
+            color: #64748b;
+        }
+
+        .footer {
+            text-align: center;
+            font-size: 13px;
+            color: #94a3b8;
+            padding-top: 6px;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 14px 12px 28px;
+            }
+
+            .hero {
+                padding: 22px 16px;
+                border-radius: 20px;
+            }
+
+            .section {
+                padding: 18px 14px;
+                border-radius: 18px;
+            }
+
+            .paper-info {
+                grid-template-columns: 1fr;
+            }
+
+            iframe {
+                height: 62vh;
+                min-height: 420px;
+            }
+
+            .viewer-top {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .actions {
+                width: 100%;
+            }
+
+            .btn {
+                flex: 1 1 100%;
+            }
+        }
+    </style>
 </head>
 <body>
-    <h2>2D Material Phototransistor Array Paper</h2>
-    <iframe src="SSDM-Zhang-K-8-03.pdf" width="100%" height="1200px"></iframe>
+    <main class="container">
+        <section class="hero">
+            <div class="tag">Research Progress</div>
+            <h1>2D material channel-based phototransistor array for broadband image sensing</h1>
+            <div class="actions">
+                <a class="btn btn-primary" href="SSDM-Zhang-K-8-03.pdf" target="_blank" rel="noopener noreferrer">
+                    Open Full Paper
+                </a>
+                <a class="btn btn-secondary" href="SSDM-Zhang-K-8-03.pdf" download>
+                    Download PDF
+                </a>
+            </div>
+        </section>
+
+        <section class="section">
+            <h2>Paper Overview</h2>
+            <div class="paper-info">
+                <div class="info-card">
+                    <h3>Type</h3>
+                    <p>Conference Paper</p>
+                </div>
+                <div class="info-card">
+                    <h3>Topic</h3>
+                    <p>SSDM-2D Material Photodetector Array</p>
+                </div>
+                <div class="info-card">
+                    <h3>Authors</h3>
+                    <p>Fengyuan Zhang, Shiyu Wei, et al.</p>
+            </div>
+        </section>
+
+        <section class="section">
+            <h2>Preview</h2>
+            <div class="viewer-wrap">
+                <div class="viewer-top">
+                    <a class="btn btn-secondary" href="SSDM-Zhang-K-8-03.pdf" target="_blank" rel="noopener noreferrer">
+                        Better Mobile View
+                    </a>
+                </div>
+                <iframe src="SSDM-Zhang-K-8-03.pdf"></iframe>
+            </div>
+        </section>
+
+        <div class="footer">
+            Extended Abstracts of the 2025 International Conference on Solid State Devices and Materials, Yokohama, 2025, pp533-534
+        </div>
+    </main>
 </body>
 </html>
