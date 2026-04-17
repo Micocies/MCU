@@ -8,9 +8,11 @@ extern "C" {
 #include <stdbool.h>
 #include <stdint.h>
 
-/* 发往上位机的固定长度二进制帧。
- * 保持 32 字节，便于两个数据帧刚好拼成一个 64 字节 FS 包。
- * 默认承载单样本；若 flags 置位 INFO/PARAM，则 4 个 int32 字段改作元信息负载。 */
+#include "frame_protocol.h"
+
+/* 发往上位机的固定长度辅助二进制帧。
+ * 保持 32 字节，用于沿用 V0.x 元信息和故障上报。
+ * V1.0 起仅用于辅助诊断/元信息；正常图像数据使用 frame_packet_t。 */
 typedef struct
 {
   uint16_t magic;     // 固定帧头，便于上位机快速识别帧边界和版本
@@ -38,9 +40,9 @@ typedef enum
 
 typedef struct
 {
-  uint32_t sample_enqueued;
+  uint32_t frame_enqueued;
   uint32_t aux_enqueued;
-  uint32_t sample_overflow;
+  uint32_t frame_overflow;
   uint32_t aux_overflow;
   uint32_t tx_ok;
   uint32_t tx_busy;
@@ -50,8 +52,8 @@ typedef struct
 
 /* 初始化 USB 发送队列。 */
 void usb_stream_init(void);
-/* 采样结果入队；样本队列满时仅影响样本帧。 */
-usb_stream_enqueue_result_t usb_stream_enqueue_sample(const sample_packet_t *pkt);
+/* 10x10 图像帧入队；帧队列满时丢弃最旧帧以保持最新画面。 */
+usb_stream_enqueue_result_t usb_stream_enqueue_frame(const frame_packet_t *frame);
 /* 元信息/故障结果入队；辅助队列与样本队列隔离，避免打断样本连续性。 */
 usb_stream_enqueue_result_t usb_stream_enqueue_aux(const sample_packet_t *pkt);
 /* 尝试把队列头部数据送往 USB CDC。 */
@@ -60,7 +62,7 @@ void usb_stream_get_stats(usb_stream_stats_t *stats);
 
 #ifdef UNIT_TEST
 /* UNIT_TEST 下的只读队列观察口，正式固件构建中不暴露这些接口。 */
-uint32_t usb_stream_test_get_sample_count(void);
+uint32_t usb_stream_test_get_frame_count(void);
 uint32_t usb_stream_test_get_aux_count(void);
 #endif
 

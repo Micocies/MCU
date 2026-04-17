@@ -8,10 +8,15 @@ add_executable(host_tests
   ../Core/Src/adc_protocol.c
   ../Core/Src/diag.c
   ../Core/Src/fault_policy.c
+  ../Core/Src/board_topology.c
+  ../Core/Src/pixel_map.c
+  ../Core/Src/frame_protocol.c
+  ../Core/Src/frame_builder.c
   ../Core/Src/usb_stream.c
   ../Core/Src/app.c
   host/main.c
   host/test_adc_protocol.c
+  host/test_frame_protocol.c
   host/test_usb_stream.c
   host/test_app_smoke.c
   host/stubs/fake_hal.c

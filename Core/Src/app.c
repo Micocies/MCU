@@ -56,7 +56,8 @@
  *   main.c         : CubeMX 外设初始化 + 主循环入口
  *   app.c          : 状态机调度、滤波、暗态校准、数据打包
  *   adc_protocol.c : ADS1220 命令、寄存器、读数和码值解析
- *   usb_stream.c   : USB CDC 样本/辅助双队列、64 字节优先打包和重试发送
+ *   frame_builder.c: 固定 100 pixels 图像帧构造
+ *   usb_stream.c   : USB CDC 图像帧/辅助双队列和重试发送
  *   stm32g4xx_it.c : EXTI0 / TIM6 / USB 中断转发
  * ==========================================================================*/
 
@@ -68,6 +69,7 @@
 #include "app_config.h"
 #include "diag.h"
 #include "fault_policy.h"
+#include "frame_builder.h"
 #include "main.h"
 #include "usb_stream.h"
 #include "version.h"
@@ -109,7 +111,7 @@ typedef struct
   uint32_t state_enter_ms;          // 进入当前状态的时间戳，单位 ms
   uint32_t drdy_deadline_ms;        // 等待 DRDY 的截止时间戳，单位 ms
   uint32_t last_fault_report_ms;    // 上次故障帧发送的时间戳，单位 ms
-  uint32_t sample_sequence;         // 单样本序列号，仅对正常样本帧递增
+  uint32_t frame_sequence;          // 10x10 图像帧序列号，仅对正常图像帧递增
   uint32_t meta_sequence;           // 元信息/故障帧序列号，避免打断样本连续性
   uint32_t calibration_count;       // 已累积的校准样本数量
   int64_t calibration_accumulator;  // 校准样本累加器，用于求暗态基线
@@ -124,6 +126,7 @@ typedef struct
   uint8_t last_usb_status;          // 最近一次 USB 入队结果码
   diag_fault_code_t last_fault_code; // 最近一次细分故障码
   diag_recovery_action_t recovery_action; // 当前待执行恢复动作
+  frame_builder_t frame_builder;     // 固定 100 pixels 图像帧构造器
 } app_context_t;                    // 应用状态机上下文
 
 static app_context_t g_app;
@@ -404,30 +407,16 @@ static int32_t app_filter_raw_code(int32_t raw_code)
 }
 
 /* 函数说明：
- *   打包最近一次 ADC/USB 发送状态。
- * 输入：
- *   无。
- * 输出：
- *   返回 16 bit 状态字。
- * 作用：
- *   普通样本和故障帧都复用这一状态摘要，便于上位机定位链路问题。
- */
-static uint16_t app_compose_status_word(void)
-{
-  return (uint16_t)(((uint16_t)g_app.last_usb_status << 8) | g_app.last_adc_status);
-}
-
-/* 函数说明：
- *   初始化一个固定 32 字节 USB 帧头。
+ *   初始化一个固定 32 字节辅助 USB 帧头。
  * 输入：
  *   pkt: 输出数据包指针。
  *   flags: 当前包附带的状态标志。
- *   reserved: 样本帧时保存链路状态，元信息帧时保存子类型。
+ *   reserved: 元信息帧时保存子类型，故障帧时保存链路状态。
  *   sequence: 当前帧使用的序列号。
  * 输出：
  *   无。
  * 作用：
- *   统一填充包头字段，样本/故障/元信息帧都共享这一步。
+ *   统一填充辅助包头字段，故障/元信息帧共享这一步。
  */
 static void app_prepare_packet(sample_packet_t *pkt, uint16_t flags, uint16_t reserved, uint32_t sequence)
 {
@@ -451,15 +440,6 @@ static void app_prepare_packet(sample_packet_t *pkt, uint16_t flags, uint16_t re
  * 作用：
  *   将当前采样上下文打包成固定 32 字节 USB 样本帧。
  */
-static void app_build_sample_packet(sample_packet_t *pkt, uint16_t flags)
-{
-  app_prepare_packet(pkt, flags, app_compose_status_word(), g_app.sample_sequence++);
-  pkt->raw_code = g_app.raw_code;         // 当前原始 ADC 码值
-  pkt->filtered_code = g_app.filtered_code; // 当前滤波结果
-  pkt->baseline_code = g_app.baseline_code; // 当前基线值（暗态均值）
-  pkt->corrected_code = g_app.corrected_code; // 当前扣除基线后的码值
-}
-
 /* 函数说明：
  *   构造一个元信息帧。
  * 输入：
@@ -495,7 +475,7 @@ static void app_build_meta_packet(sample_packet_t *pkt,
  * 输出：
  *   无。
  * 作用：
- *   故障态沿用样本负载布局回传最近一次测量上下文，但不占用样本序列号。
+ *   故障态沿用 32 字节辅助负载布局回传最近一次测量上下文。
  */
 static void app_build_fault_packet(sample_packet_t *pkt, uint16_t flags)
 {
@@ -650,6 +630,7 @@ void app_init(void)
   memset(&g_app, 0, sizeof(g_app));
   diag_init();                    // 捕获本次启动的复位原因并清空诊断计数
   fault_policy_init();            // 清空恢复策略的连续失败状态
+  frame_builder_init(&g_app.frame_builder, FRAME_TYPE_PARTIAL_REAL);
   app_enable_cycle_counter();   // 启用 DWT 周期计数器以支持微秒级时间戳
   usb_stream_init();            // 初始化 USB 发送队列
   adc_protocol_init(&hspi1);    // 初始化 ADS1220 驱动，传入 SPI 句柄以供后续通信
@@ -883,10 +864,14 @@ static void app_handle_process_sample_state(void)
  */
 static void app_handle_usb_flush_state(void)
 {
-  sample_packet_t pkt;
+  frame_packet_t frame;
 
-  app_build_sample_packet(&pkt, 0U);
-  app_record_usb_enqueue(usb_stream_enqueue_sample(&pkt), false);
+  frame_builder_build(&g_app.frame_builder,
+                      &frame,
+                      g_app.frame_sequence++,
+                      app_get_timestamp_us(),
+                      g_app.corrected_code);
+  app_record_usb_enqueue(usb_stream_enqueue_frame(&frame), false);
   app_set_state(APP_STATE_WAIT_TRIGGER);
 }
 

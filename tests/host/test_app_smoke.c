@@ -6,6 +6,7 @@
 #include "diag.h"
 #include "fake_hal.h"
 #include "fake_usb.h"
+#include "frame_protocol.h"
 #include "test_assert.h"
 #include "usb_stream.h"
 
@@ -305,6 +306,8 @@ static void test_fault_reporting_overflow_does_not_mask_root_fault(void)
  */
 static void test_calibration_then_run_enqueues_sample(void)
 {
+  const frame_packet_t *sent;
+
   reset_app_test();
   run_startup_to_comm_wait();
   complete_current_conversion(1000);
@@ -315,12 +318,20 @@ static void test_calibration_then_run_enqueues_sample(void)
   TEST_ASSERT_EQ_INT(1000, app_test_get_baseline_code());
   TEST_ASSERT_EQ_U32(0U, app_test_get_fault_flags());
 
+  drain_aux_queue();
+  fake_usb_reset();
   run_one_triggered_sample(1100);
   TEST_ASSERT_EQ_INT(APP_STATE_USB_FLUSH, app_test_get_state());
 
   app_run_once();
   TEST_ASSERT_EQ_INT(APP_STATE_WAIT_TRIGGER, app_test_get_state());
-  TEST_ASSERT_EQ_U32(1U, usb_stream_test_get_sample_count());
+  TEST_ASSERT_EQ_U32(1U, fake_usb_get_transmit_count());
+  TEST_ASSERT_EQ_U32(sizeof(frame_packet_t), fake_usb_get_last_len());
+  sent = fake_usb_get_last_frame();
+  TEST_ASSERT_EQ_U32(ARRAY_WIDTH, sent->header.width);
+  TEST_ASSERT_EQ_U32(ARRAY_HEIGHT, sent->header.height);
+  TEST_ASSERT_EQ_INT(100, sent->pixels[PROJECT_ACTIVE_PIXEL_ID]);
+  TEST_ASSERT_TRUE(frame_protocol_validate(sent));
 }
 
 /* 函数说明：

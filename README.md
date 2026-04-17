@@ -2,7 +2,13 @@
 
 基于 `STM32G431CBT`、`ADS1220` 和 `USB CDC` 的采样工程。
 
-当前工程版本：`v0.2.0`。
+当前工程版本：`v1.0.0`。
+
+V1.0 在保留现有单 ADS1220 采样/恢复状态机的基础上，把主 USB 数据流切换为固定 `100 pixels` 整帧输出：
+
+`MCU -> USB -> Host -> 10x10 图像显示`
+
+当前硬件链路仍只有单路真实采样值，默认 `FRAME_TYPE_PARTIAL_REAL` 帧中 `pixel 0` 承载真实校正值，其余 99 个像素承载确定性测试图案，保证上位机从第一版开始按固定 10x10 帧协议解析。
 
 当前工程采用“`CubeMX` 负责底层外设初始化，应用层负责状态机调度”的分层方式。系统主流程如下：
 
@@ -19,7 +25,11 @@ V0.2 在 V0.1 的锁定式故障态基础上增加了细分故障码、故障计
 - `Core/Src/adc_protocol.c`
   ADS1220 驱动层，负责 `RESET / START/SYNC / POWERDOWN / WREG / RREG / 读 3 字节 / 补码解析`
 - `Core/Src/usb_stream.c`
-  USB CDC 发送层，负责样本/辅助双队列管理、32 字节帧打包和 64 字节 FS 包优先聚合发送
+  USB CDC 发送层，负责 420 字节图像帧队列和 32 字节辅助诊断队列管理
+- `Core/Src/frame_protocol.c`
+  V1.0 固定 10x10 整帧协议、CRC 和基础校验
+- `Core/Src/frame_builder.c`
+  V1.0 测试帧、半真实帧和占位帧构造
 - `Core/Src/diag.c`
   诊断层，负责细分故障码计数、最近故障、最近恢复动作结果和复位原因记录
 - `Core/Src/fault_policy.c`
@@ -50,7 +60,7 @@ V0.2 在 V0.1 的锁定式故障态基础上增加了细分故障码、故障计
 - `APP_STATE_PROCESS_SAMPLE`
   执行滤波、基线扣除、序号和时间戳更新
 - `APP_STATE_USB_FLUSH`
-  打包成 32 字节二进制帧并压入 USB 队列
+  打包成固定 10x10 图像帧并压入 USB 队列
 - `APP_STATE_RECOVER`
   按细分故障码执行自动恢复动作，例如 SPI 重试或 ADC 复位重配
 - `APP_STATE_FAULT`
@@ -220,8 +230,8 @@ V0.2 在 V0.1 的锁定式故障态基础上增加了细分故障码、故障计
   - 然后进入 `APP_STATE_USB_FLUSH`
 
 - `APP_STATE_USB_FLUSH`
-  - 调用 `app_build_sample_packet()` 打包 32 字节样本帧
-  - 通过 `usb_stream_enqueue_sample()` 压入样本发送队列
+  - 调用 `frame_builder_build()` 打包 420 字节 `frame_packet_t`
+  - 通过 `usb_stream_enqueue_frame()` 压入图像帧发送队列
   - 随后回到 `APP_STATE_WAIT_TRIGGER`
 
 因此，正常运行阶段可以概括为：
@@ -428,33 +438,24 @@ V0.2 在 V0.1 的锁定式故障态基础上增加了细分故障码、故障计
 3. `app_filter_raw_code()` 做整数 IIR 滤波
 4. 暗态校准完成后，用 `baseline_code` 做基线扣除
 5. 使用 DWT 周期计数器生成微秒级时间戳
-6. 打包成固定 32 字节 `sample_packet_t`
-7. 压入 `usb_stream` 队列，等待 USB CDC 发送
+6. 打包成固定 420 字节 `frame_packet_t`
+7. 压入 `usb_stream` 图像帧队列，等待 USB CDC 发送
 
 ## USB 数据帧
 
-样本帧定义位于 `Core/Inc/usb_stream.h`，固定 32 字节：
+主图像帧定义位于 `Core/Inc/frame_protocol.h`，固定 420 字节：
 
-- `magic : uint16_t`
-- `version : uint8_t`
-- `state : uint8_t`
-- `flags : uint16_t`
-- `reserved : uint16_t`
-- `sequence : uint32_t`
-- `timestamp_us : uint32_t`
-- `raw_code : int32_t`
-- `filtered_code : int32_t`
-- `baseline_code : int32_t`
-- `corrected_code : int32_t`
+- `frame_header_t`：20 字节
+- `pixels[100]`：400 字节，`int32_t` row-major
 
-其中 `sequence` 字段承载正常样本流的 `sample_sequence`，协议约定如下：
+其中 `frame_id` 字段承载正常图像流序号，协议约定如下：
 
-- `sample_sequence` 类型为 `uint32_t`
-- 每发送 1 个正常样本帧递增 `1`
+- `frame_id` 类型为 `uint32_t`
+- 每发送 1 个正常图像帧递增 `1`
 - 到 `UINT32_MAX` 后回绕到 `0`
 - 主机端做连续性校验时必须支持这种 `uint32_t` wrap-around
 
-样本帧会优先按两个 32 字节拼成一个 64 字节 USB FS 包；如果只剩 1 帧，则等待最多 `APP_USB_BATCH_MAX_WAIT_MS` 后再单独发出。元信息和故障帧使用独立辅助队列，不会把最旧样本挤掉。
+V0.x 的 32 字节 `sample_packet_t` 仍保留给元信息和故障帧，走独立辅助队列，不打断主图像帧队列。完整帧格式见 `docs/v1_frame_protocol.md`。
 
 ## 中断设计原则
 
@@ -517,4 +518,11 @@ V0.2 在 V0.1 的锁定式故障态基础上增加了细分故障码、故障计
 - 故障码表：`docs/fault_codes.md`
 - 恢复状态机图：`docs/recovery_state_machine.md`
 - 异常注入测试记录：`docs/fault_injection_v0.2.0.md`
+
+## V1.0 交付物
+
+- 固定 100 pixels 拓扑说明：`docs/v1_topology.md`
+- 整帧协议说明：`docs/v1_frame_protocol.md`
+- 上位机最小显示程序：`tools/host_viewer/viewer.py`
+- 帧解析模块：`tools/host_viewer/frame_decoder.py`
 

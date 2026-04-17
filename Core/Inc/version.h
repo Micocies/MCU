@@ -16,10 +16,10 @@ typedef struct
   uint32_t ads1220_default_config;
 } version_descriptor_t;
 
-#define FW_VERSION_MAJOR                0U
-#define FW_VERSION_MINOR                2U
+#define FW_VERSION_MAJOR                1U
+#define FW_VERSION_MINOR                0U
 #define FW_VERSION_PATCH                0U
-#define FW_BUILD_NUMBER                 2U
+#define FW_BUILD_NUMBER                 3U
 
 uint32_t version_get_semver_packed(void);
 uint32_t version_get_build_number(void);

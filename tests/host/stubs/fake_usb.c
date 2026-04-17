@@ -5,7 +5,7 @@
 static uint8_t g_transmit_status = USBD_OK;
 static uint32_t g_transmit_count;
 static uint16_t g_last_len;
-static uint8_t g_last_data[64];
+static uint8_t g_last_data[sizeof(frame_packet_t)];
 
 /* 函数说明：
  *   重置 fake USB 发送记录。
@@ -92,6 +92,11 @@ const uint8_t *fake_usb_get_last_data(void)
 const sample_packet_t *fake_usb_get_last_packets(void)
 {
   return (const sample_packet_t *)g_last_data;
+}
+
+const frame_packet_t *fake_usb_get_last_frame(void)
+{
+  return (const frame_packet_t *)g_last_data;
 }
 
 /* 函数说明：

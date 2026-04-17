@@ -2,6 +2,7 @@
 
 #include "adc_protocol.h"
 #include "app_config.h"
+#include "frame_protocol.h"
 
 /* Keep firmware identity and frozen-parameter hashing in one place. */
 #define VERSION_FNV1A_INIT             2166136261UL
@@ -37,7 +38,7 @@ uint32_t version_get_build_number(void)
 
 uint32_t version_get_packet_version(void)
 {
-  return SAMPLE_PACKET_VERSION;
+  return FRAME_PROTOCOL_VERSION;
 }
 
 uint32_t version_get_ads1220_default_config(void)
@@ -61,6 +62,7 @@ uint32_t version_get_param_signature(void)
   hash = version_hash_accumulate_u32_le(hash, APP_DRDY_TIMEOUT_MS);
   hash = version_hash_accumulate_u32_le(hash, APP_FILTER_ALPHA_SHIFT);
   hash = version_hash_accumulate_u32_le(hash, APP_USB_QUEUE_DEPTH);
+  hash = version_hash_accumulate_u32_le(hash, APP_USB_FRAME_QUEUE_DEPTH);
   hash = version_hash_accumulate_u32_le(hash, APP_DAC_BIAS_CH1);
   hash = version_hash_accumulate_u32_le(hash, APP_DAC_BIAS_CH2);
   hash = version_hash_accumulate_u32_le(hash, APP_RECOVERY_SPI_RETRY_LIMIT);

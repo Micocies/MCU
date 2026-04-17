@@ -19,6 +19,7 @@ uint32_t fake_usb_get_transmit_count(void);
 uint16_t fake_usb_get_last_len(void);
 const uint8_t *fake_usb_get_last_data(void);
 const sample_packet_t *fake_usb_get_last_packets(void);
+const frame_packet_t *fake_usb_get_last_frame(void);
 
 uint8_t CDC_Transmit_FS(uint8_t *Buf, uint16_t Len);
 

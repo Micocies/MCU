@@ -14,6 +14,7 @@ extern "C" {
 #define APP_DRDY_TIMEOUT_MS               10U
 #define APP_FILTER_ALPHA_SHIFT            3U
 #define APP_USB_QUEUE_DEPTH               16U // USB 样本队列深度，过小可能导致数据丢失过多，过大则占用更多 RAM 并增加单帧延迟
+#define APP_USB_FRAME_QUEUE_DEPTH         4U
 #define APP_USB_AUX_QUEUE_DEPTH           4U
 #define APP_USB_BATCH_MAX_WAIT_MS         2U
 #define APP_DAC_BIAS_CH1                  2048U // 12-bit DAC 输出中点，提供约 VREF/2 的偏置电压
