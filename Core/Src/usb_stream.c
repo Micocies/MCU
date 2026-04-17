@@ -270,3 +270,32 @@ void usb_stream_service(void)
   }
 }
 
+#ifdef UNIT_TEST
+/* 函数说明：
+ *   获取样本队列当前深度。
+ * 输入：
+ *   无。
+ * 输出：
+ *   返回 sample ring 中待发送样本帧数量。
+ * 作用：
+ *   仅在 UNIT_TEST 构建下提供只读观察口，用于验证发送成功、USB busy 等队列策略。
+ */
+uint32_t usb_stream_test_get_sample_count(void)
+{
+  return g_usb_stream.sample_ring.count;
+}
+
+/* 函数说明：
+ *   获取辅助队列当前深度。
+ * 输入：
+ *   无。
+ * 输出：
+ *   返回 aux ring 中待发送元信息或故障帧数量。
+ * 作用：
+ *   仅在 UNIT_TEST 构建下提供只读观察口，用于验证 sample/aux 队列隔离。
+ */
+uint32_t usb_stream_test_get_aux_count(void)
+{
+  return g_usb_stream.aux_ring.count;
+}
+#endif

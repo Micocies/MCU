@@ -930,3 +930,47 @@ void app_on_usb_command_rx(const uint8_t *data, uint32_t length)
     }
   }
 }
+
+#ifdef UNIT_TEST
+/* 函数说明：
+ *   获取当前应用状态机状态。
+ * 输入：
+ *   无。
+ * 输出：
+ *   返回当前 app_state_t 状态值。
+ * 作用：
+ *   仅在 UNIT_TEST 构建下提供只读观察口，便于主机测试断言状态迁移。
+ */
+app_state_t app_test_get_state(void)
+{
+  return g_app.state;
+}
+
+/* 函数说明：
+ *   获取当前故障标志。
+ * 输入：
+ *   无。
+ * 输出：
+ *   返回当前 fault_flags 位图。
+ * 作用：
+ *   仅在 UNIT_TEST 构建下暴露故障状态，避免测试直接访问静态上下文。
+ */
+uint16_t app_test_get_fault_flags(void)
+{
+  return g_app.fault_flags;
+}
+
+/* 函数说明：
+ *   获取当前暗态基线码值。
+ * 输入：
+ *   无。
+ * 输出：
+ *   返回当前 baseline_code。
+ * 作用：
+ *   仅在 UNIT_TEST 构建下验证校准结果，不提供任何写入口。
+ */
+int32_t app_test_get_baseline_code(void)
+{
+  return g_app.baseline_code;
+}
+#endif

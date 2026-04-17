@@ -46,6 +46,13 @@ void app_on_drdy_isr(void);
 /* USB CDC 接收最小命令入口，当前识别 I/P/B 三类查询命令。 */
 void app_on_usb_command_rx(const uint8_t *data, uint32_t length);
 
+#ifdef UNIT_TEST
+/* UNIT_TEST 下的只读观察口，正式固件构建中不暴露这些接口。 */
+app_state_t app_test_get_state(void);
+uint16_t app_test_get_fault_flags(void);
+int32_t app_test_get_baseline_code(void);
+#endif
+
 #ifdef __cplusplus
 }
 #endif
