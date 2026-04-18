@@ -57,9 +57,22 @@ typedef struct
 #define ADS1220_CMD_RREG(addr, count)    (uint8_t)(0x20U | (((uint8_t)(addr) & 0x03U) << 2) | (((uint8_t)(count) - 1U) & 0x03U))
 #define ADS1220_CMD_WREG(addr, count)    (uint8_t)(0x40U | (((uint8_t)(addr) & 0x03U) << 2) | (((uint8_t)(count) - 1U) & 0x03U))
 
-/* 当前工程使用的一套默认启动值，后续可按通道、增益、速率继续细化。 */
+/* CONFIG1 fields used by this project:
+ *   DR[7:5]   = 110: 2000 SPS when MODE is turbo
+ *   MODE[4:3] = 10 : turbo mode
+ *   CM[2]     = 1  : continuous conversion
+ *   TS/BCS    = 0  : normal analog input, burnout current off
+ */
+#define ADS1220_CONFIG1_DR_MASK          0xE0U
+#define ADS1220_CONFIG1_MODE_MASK        0x18U
+#define ADS1220_CONFIG1_CM_MASK          0x04U
+#define ADS1220_CONFIG1_DR_2000SPS       0xC0U
+#define ADS1220_CONFIG1_MODE_TURBO       0x10U
+#define ADS1220_CONFIG1_CM_CONTINUOUS    0x04U
+
+/* 当前工程默认运行在 turbo + 2000 SPS + continuous conversion。 */
 #define ADS1220_DEFAULT_CONFIG0          0x08U
-#define ADS1220_DEFAULT_CONFIG1          0b11010100U  // 通道配置见ADS1220数据手册，当前涡轮模式采样率2000SPS
+#define ADS1220_DEFAULT_CONFIG1          (ADS1220_CONFIG1_DR_2000SPS | ADS1220_CONFIG1_MODE_TURBO | ADS1220_CONFIG1_CM_CONTINUOUS)
 #define ADS1220_DEFAULT_CONFIG2          0x10U
 #define ADS1220_DEFAULT_CONFIG3          0x00U
 
@@ -74,6 +87,9 @@ adc_protocol_status_t adc_protocol_read_config(ads1220_config_t *config);
 adc_protocol_status_t adc_protocol_send_command(uint8_t command);
 adc_protocol_status_t adc_protocol_reset(void);
 adc_protocol_status_t adc_protocol_stop(void);
+adc_protocol_status_t adc_protocol_start_continuous(void);
+adc_protocol_status_t adc_protocol_stop_continuous(void);
+bool adc_protocol_is_continuous_config(const ads1220_config_t *config);
 adc_protocol_status_t adc_protocol_start_conversion(void);
 /* DRDY 就绪后直接读取 3 字节原始码，不额外发送 RDATA。 */
 adc_protocol_status_t adc_protocol_read_raw24(uint8_t data[ADS1220_DATA_BYTES]);
@@ -91,4 +107,3 @@ void adc_protocol_reset_link_stats(void);
 #endif
 
 #endif /* __ADC_PROTOCOL_H */
-

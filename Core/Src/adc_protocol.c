@@ -294,21 +294,63 @@ adc_protocol_status_t adc_protocol_stop(void)
 }
 
 /* 函数说明：
- *   发起一次 ADS1220 转换。
+ *   判断给定配置是否为本工程要求的连续采样配置。
+ * 输入：
+ *   config: 待检查的 ADS1220 配置。
+ * 输出：
+ *   true : turbo + 2000 SPS + continuous conversion。
+ *   false: 不是运行态连续采样配置。
+ * 作用：
+ *   把 continuous 运行条件集中在协议层，避免上层误用 single-shot 配置。
+ */
+bool adc_protocol_is_continuous_config(const ads1220_config_t *config)
+{
+  uint8_t config1;
+
+  if (config == NULL)
+  {
+    return false;
+  }
+
+  config1 = config->reg[ADS1220_REG_CONFIG1];
+  return ((config1 & ADS1220_CONFIG1_DR_MASK) == ADS1220_CONFIG1_DR_2000SPS) &&
+         ((config1 & ADS1220_CONFIG1_MODE_MASK) == ADS1220_CONFIG1_MODE_TURBO) &&
+         ((config1 & ADS1220_CONFIG1_CM_MASK) == ADS1220_CONFIG1_CM_CONTINUOUS);
+}
+
+/* 函数说明：
+ *   启动 ADS1220 continuous conversion 链路。
  * 输入：
  *   无。
  * 输出：
- *   无。
+ *   返回协议层状态码。
  * 作用：
- *   通过 START 引脚脉冲和 START/SYNC 命令发起一次转换。
+ *   上电配置或恢复后只调用一次 START/SYNC。continuous mode 下后续样本
+ *   由 DRDY 周期性通知，上层不得把该接口当作“每样本启动转换”使用。
  */
-adc_protocol_status_t adc_protocol_start_conversion(void)
+adc_protocol_status_t adc_protocol_start_continuous(void)
 {
+  if (!adc_protocol_is_continuous_config(&g_expected_config))
+  {
+    return ADC_PROTOCOL_ERR_CONFIG_MISMATCH;
+  }
+
   /* START 引脚脉冲和 START/SYNC 命令都保留，方便后续裁剪策略。 */
   HAL_GPIO_WritePin(ADC_START_GPIO_Port, ADC_START_Pin, GPIO_PIN_SET);
   adc_protocol_delay_cycles(APP_ADC_START_PULSE_CYCLES);
   HAL_GPIO_WritePin(ADC_START_GPIO_Port, ADC_START_Pin, GPIO_PIN_RESET);
   return adc_protocol_send_command(ADS1220_CMD_START_SYNC);
+}
+
+adc_protocol_status_t adc_protocol_stop_continuous(void)
+{
+  return adc_protocol_stop();
+}
+
+/* 兼容旧接口名：现在的语义是“启动 continuous 链路一次”，不是单样本触发。 */
+adc_protocol_status_t adc_protocol_start_conversion(void)
+{
+  return adc_protocol_start_continuous();
 }
 
 /* 函数说明：

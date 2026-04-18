@@ -7,8 +7,12 @@ extern "C" {
 
 #include "stm32g4xx_hal.h"
 
-/* 采样链路默认参数，集中管理便于后续调参与版本对比。 */
+/* 采样链路默认参数，集中管理便于后续调参与版本对比。
+ * ADS1220 以 2 kSPS continuous mode 自由运行；APP_SAMPLE_RATE_HZ 保持为
+ * TIM6 的 1 kHz 输出节拍，不再表示“每 1 ms 启动一次 ADC 转换”。 */
+#define APP_ADC_CONTINUOUS_DATA_RATE_HZ   2000U
 #define APP_SAMPLE_RATE_HZ                1000U
+#define APP_ADC_SAMPLES_PER_OUTPUT        (APP_ADC_CONTINUOUS_DATA_RATE_HZ / APP_SAMPLE_RATE_HZ)
 #define APP_BIAS_STABILIZE_MS             100U
 #define APP_DARK_CALIBRATION_SAMPLES      256U
 #define APP_DRDY_TIMEOUT_MS               10U

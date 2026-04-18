@@ -48,6 +48,7 @@ static void run_startup_to_comm_wait(void)
 
   app_run_once();
   TEST_ASSERT_EQ_INT(APP_STATE_WAIT_DRDY, app_test_get_state());
+  TEST_ASSERT_EQ_U32(1U, fake_hal_get_start_sync_count());
 }
 
 static void run_recovered_startup_to_dark_calibration(void)
@@ -109,12 +110,23 @@ static void complete_current_conversion(int32_t raw_code)
  * 作用：
  *   模拟主循环收到 sample tick 后发起转换，并复用 DRDY 完成路径。
  */
-static void run_one_triggered_sample(int32_t raw_code)
+static void run_one_drdy_sample(int32_t raw_code)
 {
-  app_on_sample_tick_isr();
+  complete_current_conversion(raw_code);
+}
+
+static void run_one_output_sample_until_flush(int32_t raw_code)
+{
+  run_one_drdy_sample(raw_code);
+  TEST_ASSERT_EQ_INT(APP_STATE_WAIT_TRIGGER, app_test_get_state());
   app_run_once();
   TEST_ASSERT_EQ_INT(APP_STATE_WAIT_DRDY, app_test_get_state());
-  complete_current_conversion(raw_code);
+
+  app_on_sample_tick_isr();
+  run_one_drdy_sample(raw_code);
+  TEST_ASSERT_EQ_INT(APP_STATE_WAIT_TRIGGER, app_test_get_state());
+  app_run_once();
+  TEST_ASSERT_EQ_INT(APP_STATE_USB_FLUSH, app_test_get_state());
 }
 
 /* 函数说明：
@@ -131,12 +143,12 @@ static void run_calibration_samples(int32_t raw_code)
   uint32_t i;
 
   app_run_once();
-  TEST_ASSERT_EQ_INT(APP_STATE_WAIT_TRIGGER, app_test_get_state());
+  TEST_ASSERT_EQ_INT(APP_STATE_WAIT_DRDY, app_test_get_state());
 
   for (i = 0U; i < APP_DARK_CALIBRATION_SAMPLES; ++i)
   {
-    run_one_triggered_sample(raw_code);
-    TEST_ASSERT_EQ_INT(APP_STATE_WAIT_TRIGGER, app_test_get_state());
+    run_one_drdy_sample(raw_code);
+    TEST_ASSERT_EQ_INT(APP_STATE_WAIT_DRDY, app_test_get_state());
   }
 }
 
@@ -316,26 +328,29 @@ static void test_calibration_then_run_enqueues_sample(void)
   TEST_ASSERT_EQ_INT(APP_STATE_DARK_CALIBRATE, app_test_get_state());
 
   run_calibration_samples(1000);
-  TEST_ASSERT_EQ_INT(APP_STATE_WAIT_TRIGGER, app_test_get_state());
+  TEST_ASSERT_EQ_INT(APP_STATE_WAIT_DRDY, app_test_get_state());
   TEST_ASSERT_EQ_INT(1000, app_test_get_baseline_code());
   TEST_ASSERT_EQ_U32(0U, app_test_get_fault_flags());
+  TEST_ASSERT_EQ_U32(1U, fake_hal_get_start_sync_count());
 
   drain_aux_queue();
   fake_usb_reset();
   for (i = 1U; i < (APP_SAMPLE_RATE_HZ / LOGICAL_FRAME_RATE_HZ); ++i)
   {
-    run_one_triggered_sample(1100);
+    run_one_output_sample_until_flush(1100);
     TEST_ASSERT_EQ_INT(APP_STATE_USB_FLUSH, app_test_get_state());
     app_run_once();
-    TEST_ASSERT_EQ_INT(APP_STATE_WAIT_TRIGGER, app_test_get_state());
+    TEST_ASSERT_EQ_INT(APP_STATE_WAIT_DRDY, app_test_get_state());
     TEST_ASSERT_EQ_U32(0U, fake_usb_get_transmit_count());
+    TEST_ASSERT_EQ_U32(1U, fake_hal_get_start_sync_count());
   }
 
-  run_one_triggered_sample(1100);
+  run_one_output_sample_until_flush(1100);
   TEST_ASSERT_EQ_INT(APP_STATE_USB_FLUSH, app_test_get_state());
   app_run_once();
-  TEST_ASSERT_EQ_INT(APP_STATE_WAIT_TRIGGER, app_test_get_state());
+  TEST_ASSERT_EQ_INT(APP_STATE_WAIT_DRDY, app_test_get_state());
   TEST_ASSERT_EQ_U32(1U, fake_usb_get_transmit_count());
+  TEST_ASSERT_EQ_U32(1U, fake_hal_get_start_sync_count());
   TEST_ASSERT_EQ_U32(sizeof(frame_packet_t), fake_usb_get_last_len());
   sent = fake_usb_get_last_frame();
   TEST_ASSERT_EQ_U32(ARRAY_WIDTH, sent->header.width);

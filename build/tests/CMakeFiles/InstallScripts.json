@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"D:/code/MCU/STM32G431CBT_MCU/build/tests/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

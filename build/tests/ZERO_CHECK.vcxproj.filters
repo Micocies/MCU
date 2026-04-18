@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="D:\code\MCU\STM32G431CBT_MCU\build\tests\CMakeFiles\2fa4eb476e8aeb4d18864662d42c66c1\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{E740BCDD-A771-32D2-A4CE-F5F5E8AC397C}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

@@ -77,6 +77,7 @@ void fake_hal_set_dac_status(HAL_StatusTypeDef status);
 uint32_t fake_hal_get_gpio_write_count(void);
 uint32_t fake_hal_get_tim_start_count(void);
 uint32_t fake_hal_get_tim_stop_count(void);
+uint32_t fake_hal_get_start_sync_count(void);
 const uint8_t *fake_hal_get_last_spi_tx(void);
 uint16_t fake_hal_get_last_spi_size(void);
 

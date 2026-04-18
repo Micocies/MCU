@@ -254,7 +254,7 @@ void EXTI0_IRQHandler(void)
  * 输出：
  *   无。
  * 作用：
- *   只生成采样节拍事件，不在中断里直接发起 SPI 或 USB 操作。
+ *   只生成 1 kHz 输出许可事件，不在中断里启动 ADC、读 SPI 或发 USB。
  */
 void TIM6_DAC_IRQHandler(void)
 {

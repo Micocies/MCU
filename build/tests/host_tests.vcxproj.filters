@@ -1,0 +1,67 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\Core\Src\adc_protocol.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\Core\Src\diag.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\Core\Src\fault_policy.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\Core\Src\board_topology.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\Core\Src\pixel_map.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\Core\Src\frame_protocol.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\Core\Src\frame_builder.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\Core\Src\usb_stream.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\Core\Src\app.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\tests\host\main.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\tests\host\test_adc_protocol.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\tests\host\test_frame_protocol.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\tests\host\test_usb_stream.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\tests\host\test_app_smoke.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\tests\host\stubs\fake_hal.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\tests\host\stubs\fake_usb.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\tests\host\stubs\fake_adc_protocol_deps.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\tests\host\stubs\fake_app_deps.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="D:\code\MCU\STM32G431CBT_MCU\tests\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{726E90A9-3306-3DFC-818E-4A5DF5861EAE}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

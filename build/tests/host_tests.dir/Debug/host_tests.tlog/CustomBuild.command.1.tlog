@@ -1,0 +1,10 @@
+^D:\CODE\MCU\STM32G431CBT_MCU\TESTS\CMAKELISTS.TXT
+setlocal
+D:\code\CMake\bin\cmake.exe -SD:/code/MCU/STM32G431CBT_MCU/tests -BD:/code/MCU/STM32G431CBT_MCU/build/tests --check-stamp-file D:/code/MCU/STM32G431CBT_MCU/build/tests/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

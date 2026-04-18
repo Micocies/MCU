@@ -1,0 +1,10 @@
+^D:\CODE\MCU\STM32G431CBT_MCU\BUILD\TESTS\CMAKEFILES\2FA4EB476E8AEB4D18864662D42C66C1\GENERATE.STAMP.RULE
+setlocal
+D:\code\CMake\bin\cmake.exe -SD:/code/MCU/STM32G431CBT_MCU/tests -BD:/code/MCU/STM32G431CBT_MCU/build/tests --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file D:/code/MCU/STM32G431CBT_MCU/build/tests/mcu_host_tests.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

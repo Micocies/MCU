@@ -21,9 +21,9 @@ typedef enum
   APP_STATE_COMM_CHECK,
   /* 采集固定数量样本，建立暗态基线。 */
   APP_STATE_DARK_CALIBRATE,
-  /* 等待TIM6采样节拍 */
+  /* 等待 TIM6 输出许可，不启动 ADC 转换。 */
   APP_STATE_WAIT_TRIGGER,
-  /* 已发起转换，等待 DRDY 下降沿。 */
+  /* continuous ADC 已启动，等待 DRDY 下降沿。 */
   APP_STATE_WAIT_DRDY,
   /* 从ADS1220读出3字节原始数据 */
   APP_STATE_READ_SAMPLE,
@@ -41,9 +41,9 @@ typedef enum
 void app_init(void);
 /* 主循环调度入口，每次调用推进状态机。 */
 void app_run_once(void);
-/* TIM6 中断只调用这个函数置位采样事件。 */
+/* TIM6 中断只调用这个函数累计 1 kHz 输出许可。 */
 void app_on_sample_tick_isr(void);
-/* DRDY 外部中断只调用这个函数置位数据就绪事件。 */
+/* DRDY 外部中断只调用这个函数累计数据就绪事件。 */
 void app_on_drdy_isr(void);
 /* USB CDC 接收最小命令入口，当前识别 I/P/B 三类查询命令。 */
 void app_on_usb_command_rx(const uint8_t *data, uint32_t length);

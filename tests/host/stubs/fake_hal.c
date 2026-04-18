@@ -16,6 +16,7 @@ static uint8_t g_config_mismatch;
 static uint32_t g_gpio_write_count;
 static uint32_t g_tim_start_count;
 static uint32_t g_tim_stop_count;
+static uint32_t g_start_sync_count;
 static uint8_t g_last_spi_tx[16];
 static uint16_t g_last_spi_size;
 static int32_t g_raw_queue[512];
@@ -44,6 +45,7 @@ void fake_hal_reset(void)
   g_gpio_write_count = 0U;
   g_tim_start_count = 0U;
   g_tim_stop_count = 0U;
+  g_start_sync_count = 0U;
   memset(g_last_spi_tx, 0, sizeof(g_last_spi_tx));
   g_last_spi_size = 0U;
   g_raw_head = 0U;
@@ -189,6 +191,11 @@ uint32_t fake_hal_get_tim_stop_count(void)
   return g_tim_stop_count;
 }
 
+uint32_t fake_hal_get_start_sync_count(void)
+{
+  return g_start_sync_count;
+}
+
 /* 函数说明：
  *   获取最后一次 SPI TX 缓冲区。
  * 输入：
@@ -291,6 +298,10 @@ HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *hspi,
   if ((pTxData != 0) && (Size <= sizeof(g_last_spi_tx)))
   {
     memcpy(g_last_spi_tx, pTxData, Size);
+  }
+  if ((pTxData != 0) && (Size == 1U) && (pTxData[0] == ADS1220_CMD_START_SYNC))
+  {
+    g_start_sync_count++;
   }
 
   if ((pRxData != 0) && (Size != 0U))

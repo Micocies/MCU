@@ -5,22 +5,23 @@ stateDiagram-v2
   [*] --> INIT
   INIT --> BIAS_STABILIZE: reset/configure/bias ok
   BIAS_STABILIZE --> COMM_CHECK: settle timeout elapsed
-  COMM_CHECK --> WAIT_DRDY: start conversion
-  WAIT_TRIGGER --> WAIT_DRDY: sample tick/start conversion
+  COMM_CHECK --> WAIT_DRDY: start continuous once
+  WAIT_TRIGGER --> USB_FLUSH: output tick + decimated sample
+  WAIT_TRIGGER --> WAIT_DRDY: no output permit; keep ADC pipeline moving
   WAIT_DRDY --> READ_SAMPLE: DRDY event
   READ_SAMPLE --> PROCESS_SAMPLE: SPI read ok
   PROCESS_SAMPLE --> DARK_CALIBRATE: link_check ok during self-check
-  DARK_CALIBRATE --> WAIT_TRIGGER: start TIM6
-  PROCESS_SAMPLE --> WAIT_TRIGGER: calibration sample accepted
-  PROCESS_SAMPLE --> USB_FLUSH: run sample processed
-  USB_FLUSH --> WAIT_TRIGGER: enqueue sample
+  DARK_CALIBRATE --> WAIT_DRDY: start TIM6 output permits
+  PROCESS_SAMPLE --> WAIT_DRDY: calibration sample accepted
+  PROCESS_SAMPLE --> WAIT_TRIGGER: run sample processed
+  USB_FLUSH --> WAIT_DRDY: enqueue output sample
 
   WAIT_DRDY --> RECOVER: DRDY timeout
   READ_SAMPLE --> RECOVER: SPI timeout/error
   PROCESS_SAMPLE --> RECOVER: config mismatch/link_check error
-  COMM_CHECK --> RECOVER: start conversion error
+  COMM_CHECK --> RECOVER: start continuous error
 
-  RECOVER --> WAIT_DRDY: SPI retry ok
+  RECOVER --> WAIT_DRDY: continuous restart for SPI retry ok
   RECOVER --> BIAS_STABILIZE: reset + configure + link_check ok
   RECOVER --> FAULT: recovery attempts over threshold
   INIT --> FAULT: non-recoverable init failure

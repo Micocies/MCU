@@ -1,0 +1,4 @@
+D:/code/MCU/STM32G431CBT_MCU/build/tests/CMakeFiles/host_tests.dir
+D:/code/MCU/STM32G431CBT_MCU/build/tests/CMakeFiles/RUN_TESTS.dir
+D:/code/MCU/STM32G431CBT_MCU/build/tests/CMakeFiles/ALL_BUILD.dir
+D:/code/MCU/STM32G431CBT_MCU/build/tests/CMakeFiles/ZERO_CHECK.dir

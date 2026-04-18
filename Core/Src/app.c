@@ -15,7 +15,7 @@
  *    |  等待模拟前端稳定
  *    v
  *   APP_STATE_COMM_CHECK
- *    |  发起一次试采样
+ *    |  启动 ADS1220 continuous conversion 一次
  *    v
  *   APP_STATE_WAIT_DRDY
  *    |  等待 DRDY 下降沿
@@ -28,11 +28,11 @@
  *    |  通信异常 -> 进入故障
  *    v
  *   APP_STATE_DARK_CALIBRATE
- *    |  采集 N 个样本求均值基线
+ *    |  继续使用 continuous + DRDY 采集 N 个样本求均值基线
  *    v
- *   APP_STATE_WAIT_TRIGGER <----- TIM6 周期节拍
+ *   APP_STATE_WAIT_TRIGGER <----- TIM6 1 kHz 输出许可
  *    |                                ^
- *    | 发起转换                        |
+ *    | 等待输出许可，不启动 ADC         |
  *    v                                |
  *   APP_STATE_WAIT_DRDY --------------+
  *    |
@@ -45,7 +45,14 @@
  *    v
  *   APP_STATE_USB_FLUSH
  *    |  结果入 USB 队列
- *    +-------------------------------> 回到 WAIT_TRIGGER
+ *    +-------------------------------> 回到 WAIT_DRDY
+ *
+ * 时序关系：
+ *   ADS1220 默认配置为 turbo + 2000 SPS + continuous conversion。
+ *   START/SYNC 只在上电自检或恢复后调用一次；运行中 DRDY 表示最近一个
+ *   ADC 样本已经完成，主循环据此读 24 bit 数据。TIM6 只产生 1 kHz
+ *   输出许可，不再作为 ADC 转换启动信号。运行态显式采用 2 个 DRDY
+ *   取 1 个输出样本候选，再与 TIM6 输出许可共同决定是否进入 USB_FLUSH。
  *
  * 异常路径：
  *   任意阶段发现超时、SPI 错误或配置回读失败
@@ -77,6 +84,8 @@
 
 #define APP_SAMPLES_PER_LOGICAL_FRAME (APP_SAMPLE_RATE_HZ / LOGICAL_FRAME_RATE_HZ)
 typedef char app_sample_rate_must_divide_frame_rate[(APP_SAMPLE_RATE_HZ % LOGICAL_FRAME_RATE_HZ) == 0U ? 1 : -1];
+typedef char app_adc_rate_must_divide_output_rate[(APP_ADC_CONTINUOUS_DATA_RATE_HZ % APP_SAMPLE_RATE_HZ) == 0U ? 1 : -1];
+typedef char app_adc_decimation_must_be_nonzero[(APP_ADC_SAMPLES_PER_OUTPUT > 0U) ? 1 : -1];
 
 extern DAC_HandleTypeDef hdac1;
 extern SPI_HandleTypeDef hspi1;
@@ -107,8 +116,8 @@ typedef enum
 
 typedef struct
 {
-  volatile uint8_t evt_sample_tick; // TIM6 采样节拍事件
-  volatile uint8_t evt_drdy;        // ADS1220 DRDY 事件
+  volatile uint32_t pending_output_ticks; // TIM6 1 kHz 输出许可计数
+  volatile uint32_t pending_drdy_count;   // ADS1220 DRDY 数据就绪事件计数
   volatile uint8_t command_flags;   // USB 命令请求标志，由 CDC 接收回调置位
   app_state_t state;                // 当前状态
   app_pipeline_mode_t pipeline_mode;// 当前样本所属的流水线阶段
@@ -118,6 +127,8 @@ typedef struct
   uint32_t frame_sequence;          // 10x10 图像帧序列号，仅对正常图像帧递增
   uint32_t frame_sample_count;       // 距离上一图像帧已经处理的运行态样本数
   uint32_t meta_sequence;           // 元信息/故障帧序列号，避免打断样本连续性
+  uint32_t drdy_events_for_sample;   // 本次读样前累计到的 DRDY 事件数量
+  uint32_t run_drdy_decimator;       // 运行态按 DRDY 计数做 2 kSPS -> 1 kHz 降采样
   uint32_t calibration_count;       // 已累积的校准样本数量
   int64_t calibration_accumulator;  // 校准样本累加器，用于求暗态基线
   int32_t raw_code;                 // 当前原始 ADC 码值
@@ -127,6 +138,8 @@ typedef struct
   uint16_t fault_flags;             // 当前故障标志位，按位定义见 SAMPLE_FLAG_XXX
   uint16_t recovery_fault_flags;     // 触发当前恢复动作的故障标志
   uint8_t filter_valid;             // 滤波器是否已初始化
+  uint8_t continuous_started;       // ADS1220 continuous 链路是否已经启动
+  uint8_t latest_sample_valid;      // 是否已有一个降采样后的最新运行样本等待输出许可
   uint8_t last_adc_status;          // 最近一次 ADC 协议层状态码
   uint8_t last_usb_status;          // 最近一次 USB 入队结果码
   diag_fault_code_t last_fault_code; // 最近一次细分故障码
@@ -165,6 +178,70 @@ static void app_set_state(app_state_t state)
 static bool app_has_elapsed(uint32_t start_ms, uint32_t duration_ms)
 {
   return ((HAL_GetTick() - start_ms) >= duration_ms);
+}
+
+static void app_clear_pending_sampling_events(void)
+{
+  uint32_t primask;
+
+  primask = __get_PRIMASK();
+  __disable_irq();
+  g_app.pending_output_ticks = 0U;
+  g_app.pending_drdy_count = 0U;
+  if (primask == 0U)
+  {
+    __enable_irq();
+  }
+}
+
+static uint32_t app_take_pending_drdy_count(void)
+{
+  uint32_t primask;
+  uint32_t count;
+
+  primask = __get_PRIMASK();
+  __disable_irq();
+  count = g_app.pending_drdy_count;
+  g_app.pending_drdy_count = 0U;
+  if (primask == 0U)
+  {
+    __enable_irq();
+  }
+
+  return count;
+}
+
+static bool app_consume_output_tick(void)
+{
+  uint32_t primask;
+  bool consumed = false;
+
+  primask = __get_PRIMASK();
+  __disable_irq();
+  if (g_app.pending_output_ticks != 0U)
+  {
+    g_app.pending_output_ticks--;
+    consumed = true;
+  }
+  if (primask == 0U)
+  {
+    __enable_irq();
+  }
+
+  return consumed;
+}
+
+static void app_clear_pending_output_ticks(void)
+{
+  uint32_t primask;
+
+  primask = __get_PRIMASK();
+  __disable_irq();
+  g_app.pending_output_ticks = 0U;
+  if (primask == 0U)
+  {
+    __enable_irq();
+  }
 }
 
 /* 函数说明：
@@ -318,9 +395,10 @@ static void app_enter_fault_hold(uint16_t reason_flags)
 {
   g_app.fault_flags |= reason_flags;
   app_stop_timer();
-  (void)adc_protocol_stop();
-  g_app.evt_sample_tick = 0U;
-  g_app.evt_drdy = 0U;
+  (void)adc_protocol_stop_continuous();
+  g_app.continuous_started = 0U;
+  g_app.latest_sample_valid = 0U;
+  app_clear_pending_sampling_events();
   g_app.last_fault_report_ms = HAL_GetTick() - APP_FAULT_REPORT_INTERVAL_MS;
   app_set_state(APP_STATE_FAULT);
 }
@@ -353,38 +431,70 @@ static void app_schedule_recovery(diag_fault_code_t code, uint16_t reason_flags)
   g_app.recovery_action = decision.action;
   g_app.recovery_fault_flags = reason_flags;
   app_stop_timer();
-  (void)adc_protocol_stop();
-  g_app.evt_sample_tick = 0U;
-  g_app.evt_drdy = 0U;
+  (void)adc_protocol_stop_continuous();
+  g_app.continuous_started = 0U;
+  g_app.latest_sample_valid = 0U;
+  app_clear_pending_sampling_events();
   app_set_state(APP_STATE_RECOVER);
 }
 
+static void app_enter_wait_drdy(void)
+{
+  g_app.drdy_deadline_ms = HAL_GetTick() + APP_DRDY_TIMEOUT_MS;
+  app_set_state(APP_STATE_WAIT_DRDY);
+}
+
 /* 函数说明：
- *   发起一次 ADS1220 转换。
+ *   确保 ADS1220 continuous conversion 链路已经启动。
  * 输入：
  *   pipeline_mode: 当前采样属于自检、校准或运行阶段。
  * 输出：
- *   无。
+ *   true : continuous 已经在运行或启动成功。
+ *   false: START/SYNC 失败，已调度恢复。
  * 作用：
- *   记录流水线模式，并切换到等待 DRDY 的状态。
+ *   START/SYNC 只在上电自检或恢复后调用一次。后续样本完全由 DRDY
+ *   事件驱动读取，TIM6 不再触发 adc_protocol_start_conversion()。
  */
-static void app_begin_conversion(app_pipeline_mode_t pipeline_mode)
+static bool app_ensure_continuous_started(app_pipeline_mode_t pipeline_mode)
 {
   adc_protocol_status_t status;
 
   g_app.pipeline_mode = pipeline_mode;
-  g_app.evt_drdy = 0U;
-  status = adc_protocol_start_conversion();
+  if (g_app.continuous_started != 0U)
+  {
+    return true;
+  }
+
+  (void)app_take_pending_drdy_count();
+  status = adc_protocol_start_continuous();
   g_app.last_adc_status = (uint8_t)status;
   if (status != ADC_PROTOCOL_OK)
   {
     app_schedule_recovery(app_fault_code_from_adc_status(status),
                           (uint16_t)(app_flags_from_adc_status(status) |
                                      ((pipeline_mode == APP_PIPELINE_COMM_CHECK) ? SAMPLE_FLAG_COMM_CHECK_FAILED : 0U)));
-    return;
+    return false;
   }
-  g_app.drdy_deadline_ms = HAL_GetTick() + APP_DRDY_TIMEOUT_MS;
-  app_set_state(APP_STATE_WAIT_DRDY);
+
+  g_app.continuous_started = 1U;
+  return true;
+}
+
+static bool app_try_schedule_output_flush(void)
+{
+  if ((g_app.pipeline_mode != APP_PIPELINE_RUN) || (g_app.latest_sample_valid == 0U))
+  {
+    return false;
+  }
+
+  if (!app_consume_output_tick())
+  {
+    return false;
+  }
+
+  g_app.latest_sample_valid = 0U;
+  app_set_state(APP_STATE_USB_FLUSH);
+  return true;
 }
 
 /* 函数说明：
@@ -657,6 +767,9 @@ static void app_handle_init_state(void)
   adc_protocol_status_t status;
 
   app_stop_timer();
+  g_app.continuous_started = 0U;
+  g_app.latest_sample_valid = 0U;
+  app_clear_pending_sampling_events();
   HAL_GPIO_WritePin(ADC_CS_GPIO_Port, ADC_CS_Pin, GPIO_PIN_SET);
 
   status = adc_protocol_reset();
@@ -715,7 +828,10 @@ static void app_handle_bias_stabilize_state(void)
  */
 static void app_handle_comm_check_state(void)
 {
-  app_begin_conversion(APP_PIPELINE_COMM_CHECK);
+  if (app_ensure_continuous_started(APP_PIPELINE_COMM_CHECK))
+  {
+    app_enter_wait_drdy();
+  }
 }
 
 /* 函数说明：
@@ -725,10 +841,15 @@ static void app_handle_comm_check_state(void)
  * 输出：
  *   无。
  * 作用：
- *   清空校准上下文并启动 TIM6 节拍，准备进入校准闭环。
+ *   清空校准上下文并启动 TIM6 输出节拍，校准样本仍由 DRDY 驱动。
  */
 static void app_handle_dark_calibrate_state(void)
 {
+  if (!app_ensure_continuous_started(APP_PIPELINE_CALIBRATION))
+  {
+    return;
+  }
+
   g_app.pipeline_mode = APP_PIPELINE_CALIBRATION;
   g_app.calibration_accumulator = 0;
   g_app.calibration_count = 0U;
@@ -736,9 +857,12 @@ static void app_handle_dark_calibrate_state(void)
   g_app.baseline_code = 0;
   g_app.corrected_code = 0;
   g_app.frame_sample_count = 0U;
+  g_app.run_drdy_decimator = 0U;
+  g_app.latest_sample_valid = 0U;
   g_app.fault_flags = 0U;
+  app_clear_pending_sampling_events();
   app_start_timer();
-  app_set_state(APP_STATE_WAIT_TRIGGER);
+  app_enter_wait_drdy();
 }
 
 /* 函数说明：
@@ -748,15 +872,17 @@ static void app_handle_dark_calibrate_state(void)
  * 输出：
  *   无。
  * 作用：
- *   等待 TIM6 节拍，再在主循环中启动一次 ADC 转换。
+ *   等待 TIM6 输出许可。这里绝不启动 ADC 转换；若暂时不能输出，
+ *   立即回到 WAIT_DRDY，保证 continuous ADC 的原始样本链路持续前进。
  */
 static void app_handle_wait_trigger_state(void)
 {
-  if (g_app.evt_sample_tick != 0U)
+  if (app_try_schedule_output_flush())
   {
-    g_app.evt_sample_tick = 0U;
-    app_begin_conversion(g_app.pipeline_mode);
+    return;
   }
+
+  app_enter_wait_drdy();
 }
 
 /* 函数说明：
@@ -766,13 +892,22 @@ static void app_handle_wait_trigger_state(void)
  * 输出：
  *   无。
  * 作用：
- *   等待 ADC 数据就绪，若超时则进入故障状态。
+ *   等待 continuous ADC 的下一个 DRDY。若已有降采样后的运行样本且
+ *   TIM6 输出许可到达，可先进入 USB_FLUSH；否则 DRDY 到来后读最新样本。
  */
 static void app_handle_wait_drdy_state(void)
 {
-  if (g_app.evt_drdy != 0U)
+  uint32_t drdy_count;
+
+  if (app_try_schedule_output_flush())
   {
-    g_app.evt_drdy = 0U;
+    return;
+  }
+
+  drdy_count = app_take_pending_drdy_count();
+  if (drdy_count != 0U)
+  {
+    g_app.drdy_events_for_sample = drdy_count;
     app_set_state(APP_STATE_READ_SAMPLE);
   }
   else if ((int32_t)(HAL_GetTick() - g_app.drdy_deadline_ms) >= 0)
@@ -848,14 +983,27 @@ static void app_handle_process_sample_state(void)
       g_app.baseline_code = (int32_t)(g_app.calibration_accumulator / (int64_t)APP_DARK_CALIBRATION_SAMPLES);
       g_app.filter_valid = 0U;
       g_app.pipeline_mode = APP_PIPELINE_RUN;
+      g_app.run_drdy_decimator = 0U;
+      g_app.latest_sample_valid = 0U;
+      app_clear_pending_output_ticks();
     }
 
-    app_set_state(APP_STATE_WAIT_TRIGGER);
+    app_enter_wait_drdy();
   }
   else
   {
     g_app.corrected_code = g_app.filtered_code - g_app.baseline_code;
-    app_set_state(APP_STATE_USB_FLUSH);
+    /* 显式降采样策略：ADS1220 连续 2 kSPS，每累计 2 个 DRDY 事件，
+     * 将“最近一次已读样本”标记为 1 kHz 输出候选。若主循环偶尔延迟，
+     * DRDY 计数会保留事件数量，但 ADS1220 数据寄存器只能读到最新样本。 */
+    g_app.run_drdy_decimator += g_app.drdy_events_for_sample;
+    if (g_app.run_drdy_decimator >= APP_ADC_SAMPLES_PER_OUTPUT)
+    {
+      g_app.run_drdy_decimator %= APP_ADC_SAMPLES_PER_OUTPUT;
+      g_app.latest_sample_valid = 1U;
+    }
+
+    app_set_state(APP_STATE_WAIT_TRIGGER);
   }
 }
 
@@ -866,17 +1014,19 @@ static void app_handle_process_sample_state(void)
  * 输出：
  *   无。
  * 作用：
- *   打包样本并压入 USB 队列，随后返回等待下一次触发。
+ *   消费一个 1 kHz 输出样本。V1.0 图像帧仍按 100 Hz 发布：
+ *   每 10 个输出样本构造 1 个 10x10 frame_packet_t。
  */
 static void app_handle_usb_flush_state(void)
 {
   frame_packet_t frame;
 
-  /* ADS1220 当前仍按 1 kHz 单通道采样，V1.0 对外只发布 100 Hz 逻辑图像帧。 */
+  /* ADS1220 以 2 kSPS continuous mode 运行，本函数只处理经 DRDY 计数
+   * 降采样并经 TIM6 输出许可放行后的 1 kHz 运行样本。 */
   g_app.frame_sample_count++;
   if (g_app.frame_sample_count < APP_SAMPLES_PER_LOGICAL_FRAME)
   {
-    app_set_state(APP_STATE_WAIT_TRIGGER);
+    app_enter_wait_drdy();
     return;
   }
 
@@ -887,7 +1037,7 @@ static void app_handle_usb_flush_state(void)
                       app_get_timestamp_us(),
                       g_app.corrected_code);
   app_record_usb_enqueue(usb_stream_enqueue_frame(&frame), false);
-  app_set_state(APP_STATE_WAIT_TRIGGER);
+  app_enter_wait_drdy();
 }
 
 static void app_finish_recovery(diag_recovery_action_t action, bool success)
@@ -903,16 +1053,9 @@ static void app_handle_recover_state(void)
 
   if (action == DIAG_RECOVERY_ACTION_SPI_RETRY)
   {
-    g_app.evt_drdy = 0U;
-    status = adc_protocol_start_conversion();
-    g_app.last_adc_status = (uint8_t)status;
-    if (status != ADC_PROTOCOL_OK)
+    if (!app_ensure_continuous_started(g_app.pipeline_mode))
     {
       app_finish_recovery(action, false);
-      app_schedule_recovery(app_fault_code_from_adc_status(status),
-                            (uint16_t)(app_flags_from_adc_status(status) |
-                                       g_app.recovery_fault_flags |
-                                       SAMPLE_FLAG_RECOVERY_ACTIVE));
       return;
     }
 
@@ -920,8 +1063,7 @@ static void app_handle_recover_state(void)
     g_app.recovery_fault_flags = 0U;
     g_app.recovery_action = DIAG_RECOVERY_ACTION_NONE;
     app_finish_recovery(action, true);
-    g_app.drdy_deadline_ms = HAL_GetTick() + APP_DRDY_TIMEOUT_MS;
-    app_set_state(APP_STATE_WAIT_DRDY);
+    app_enter_wait_drdy();
     return;
   }
 
@@ -954,6 +1096,9 @@ static void app_handle_recover_state(void)
     g_app.recovery_action = DIAG_RECOVERY_ACTION_NONE;
     g_app.pipeline_mode = APP_PIPELINE_COMM_CHECK;
     g_app.filter_valid = 0U;
+    g_app.continuous_started = 0U;
+    g_app.latest_sample_valid = 0U;
+    app_clear_pending_sampling_events();
     app_finish_recovery(action, true);
     app_set_state(APP_STATE_BIAS_STABILIZE);
     return;
@@ -1053,11 +1198,14 @@ void app_run_once(void)
  * 输出：
  *   无。
  * 作用：
- *   仅置位采样节拍事件。
+ *   仅累计 1 kHz 输出许可。TIM6 不启动 ADC 转换。
  */
 void app_on_sample_tick_isr(void)
 {
-  g_app.evt_sample_tick = 1U;
+  if (g_app.pending_output_ticks != UINT32_MAX)
+  {
+    g_app.pending_output_ticks++;
+  }
 }
 
 /* 函数说明：
@@ -1067,11 +1215,14 @@ void app_on_sample_tick_isr(void)
  * 输出：
  *   无。
  * 作用：
- *   仅置位数据就绪事件。
+ *   仅累计数据就绪事件。SPI 读样始终在主循环中执行。
  */
 void app_on_drdy_isr(void)
 {
-  g_app.evt_drdy = 1U;
+  if (g_app.pending_drdy_count != UINT32_MAX)
+  {
+    g_app.pending_drdy_count++;
+  }
 }
 
 /* 函数说明：
