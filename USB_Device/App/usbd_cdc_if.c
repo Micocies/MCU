@@ -23,6 +23,7 @@
 
 /* USER CODE BEGIN INCLUDE */
 #include "app.h"
+#include "usb_stream.h"
 /* USER CODE END INCLUDE */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -186,7 +187,7 @@ uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len)
  * 输出：
  *   返回回调处理状态。
  * 作用：
- *   当前仅保留接口，不在回调中推进业务逻辑。
+ *   通知 USB stream 当前异步发送完成，不在回调中继续发下一包。
  */
 static int8_t CDC_TransmitCplt_FS(uint8_t *pbuf, uint32_t *Len, uint8_t epnum)
 {
@@ -196,6 +197,7 @@ static int8_t CDC_TransmitCplt_FS(uint8_t *pbuf, uint32_t *Len, uint8_t epnum)
   UNUSED(Len);
   UNUSED(epnum);
 
+  usb_stream_on_tx_complete();
   return result;
 }
 

@@ -457,6 +457,8 @@ V0.2 在 V0.1 的锁定式故障态基础上增加了细分故障码、故障计
 
 V0.x 的 32 字节 `sample_packet_t` 仍保留给元信息和故障帧，走独立辅助队列，不打断主图像帧队列。完整帧格式见 `docs/v1_frame_protocol.md`。
 
+当前 ADS1220 采样节拍仍由 `APP_SAMPLE_RATE_HZ = 1000` 驱动；V1.0 图像输出按 `LOGICAL_FRAME_RATE_HZ = 100` 节流，每 10 个运行态样本构造并发送 1 个 10x10 图像帧。
+
 ## 中断设计原则
 
 - `EXTI0_IRQHandler()`

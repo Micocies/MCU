@@ -22,12 +22,22 @@ typedef struct
   uint32_t count;
 } usb_stream_ring_t;
 
+typedef enum
+{
+  USB_STREAM_ACTIVE_NONE = 0,
+  USB_STREAM_ACTIVE_FRAME,
+  USB_STREAM_ACTIVE_AUX
+} usb_stream_active_ring_t;
+
 typedef struct
 {
   usb_stream_ring_t frame_ring;
   usb_stream_ring_t aux_ring;
   usb_stream_stats_t stats;
   uint8_t tx_buffer[USB_STREAM_MAX_PACKET_BYTES];
+  volatile uint8_t tx_in_flight;
+  volatile uint8_t tx_complete_pending;
+  usb_stream_active_ring_t active_ring;
 } usb_stream_context_t;
 
 static usb_stream_queued_packet_t g_frame_packets[APP_USB_FRAME_QUEUE_DEPTH];
@@ -49,6 +59,77 @@ static void usb_stream_bind_rings(void)
   g_usb_stream.frame_ring.depth = APP_USB_FRAME_QUEUE_DEPTH;
   g_usb_stream.aux_ring.packet = g_aux_packets;
   g_usb_stream.aux_ring.depth = APP_USB_AUX_QUEUE_DEPTH;
+}
+
+/* 函数说明：
+ *   判断指定队列的队首是否正在被 USB CDC 异步发送。
+ * 输入：
+ *   ring: 待检查的环形队列指针。
+ * 输出：
+ *   true : 该队列队首正在发送，不能被覆盖或弹出。
+ *   false: 该队列没有发送中的队首数据。
+ * 作用：
+ *   为队列满时的丢弃策略提供保护条件，避免破坏未完成发送的数据。
+ */
+static bool usb_stream_is_inflight_ring(const usb_stream_ring_t *ring)
+{
+  if (g_usb_stream.tx_in_flight == 0U)
+  {
+    return false;
+  }
+
+  if ((ring == &g_usb_stream.frame_ring) && (g_usb_stream.active_ring == USB_STREAM_ACTIVE_FRAME))
+  {
+    return true;
+  }
+
+  if ((ring == &g_usb_stream.aux_ring) && (g_usb_stream.active_ring == USB_STREAM_ACTIVE_AUX))
+  {
+    return true;
+  }
+
+  return false;
+}
+
+/* 函数说明：
+ *   丢弃指定队列中最旧的可丢弃数据。
+ * 输入：
+ *   ring: 目标环形队列指针。
+ * 输出：
+ *   无。
+ * 作用：
+ *   队首正在异步发送时保留队首槽，改为丢弃次旧数据，避免 CDC 完成前复用发送中的队列槽。
+ */
+static void usb_stream_drop_oldest_queued_packet(usb_stream_ring_t *ring)
+{
+  uint32_t drop_index;
+  uint32_t last_index;
+  uint32_t next_index;
+
+  if (ring->count == 0U)
+  {
+    return;
+  }
+
+  if ((usb_stream_is_inflight_ring(ring) == false) || (ring->count == 1U))
+  {
+    ring->tail = (ring->tail + 1U) % ring->depth;
+    ring->count--;
+    return;
+  }
+
+  drop_index = (ring->tail + 1U) % ring->depth;
+  last_index = (ring->head + ring->depth - 1U) % ring->depth;
+
+  while (drop_index != last_index)
+  {
+    next_index = (drop_index + 1U) % ring->depth;
+    ring->packet[drop_index] = ring->packet[next_index];
+    drop_index = next_index;
+  }
+
+  ring->head = last_index;
+  ring->count--;
 }
 
 /* 函数说明：
@@ -76,8 +157,7 @@ static usb_stream_enqueue_result_t usb_stream_enqueue_internal(usb_stream_ring_t
 
   if (ring->count >= ring->depth)
   {
-    ring->tail = (ring->tail + 1U) % ring->depth;
-    ring->count--;
+    usb_stream_drop_oldest_queued_packet(ring);
     dropped_oldest = true;
   }
 
@@ -102,6 +182,59 @@ static void usb_stream_pop_packet(usb_stream_ring_t *ring)
 {
   ring->tail = (ring->tail + 1U) % ring->depth;
   ring->count--;
+}
+
+/* 函数说明：
+ *   获取当前正在异步发送的队列。
+ * 输入：
+ *   无。
+ * 输出：
+ *   返回当前发送中的环形队列指针；没有发送中队列时返回空。
+ * 作用：
+ *   在 CDC 完成后定位需要弹出的队首数据。
+ */
+static usb_stream_ring_t *usb_stream_get_active_ring(void)
+{
+  if (g_usb_stream.active_ring == USB_STREAM_ACTIVE_FRAME)
+  {
+    return &g_usb_stream.frame_ring;
+  }
+
+  if (g_usb_stream.active_ring == USB_STREAM_ACTIVE_AUX)
+  {
+    return &g_usb_stream.aux_ring;
+  }
+
+  return 0;
+}
+
+/* 函数说明：
+ *   收尾已经完成的异步 CDC 发送。
+ * 输入：
+ *   无。
+ * 输出：
+ *   无。
+ * 作用：
+ *   在主循环上下文中弹出已发送队首并清除发送中状态，避免在 USB 回调里改队列。
+ */
+static void usb_stream_finish_completed_tx(void)
+{
+  usb_stream_ring_t *active_ring;
+
+  if ((g_usb_stream.tx_in_flight == 0U) || (g_usb_stream.tx_complete_pending == 0U))
+  {
+    return;
+  }
+
+  active_ring = usb_stream_get_active_ring();
+  if ((active_ring != 0) && (active_ring->count != 0U))
+  {
+    usb_stream_pop_packet(active_ring);
+  }
+
+  g_usb_stream.active_ring = USB_STREAM_ACTIVE_NONE;
+  g_usb_stream.tx_complete_pending = 0U;
+  g_usb_stream.tx_in_flight = 0U;
 }
 
 /* 函数说明：
@@ -204,16 +337,26 @@ void usb_stream_service(void)
   uint16_t tx_len;
   uint8_t tx_status;
 
+  usb_stream_finish_completed_tx();
+
+  if (g_usb_stream.tx_in_flight != 0U)
+  {
+    return;
+  }
+
   if (g_usb_stream.frame_ring.count != 0U)
   {
     active_ring = &g_usb_stream.frame_ring;
+    g_usb_stream.active_ring = USB_STREAM_ACTIVE_FRAME;
   }
   else if (g_usb_stream.aux_ring.count != 0U)
   {
     active_ring = &g_usb_stream.aux_ring;
+    g_usb_stream.active_ring = USB_STREAM_ACTIVE_AUX;
   }
   else
   {
+    g_usb_stream.active_ring = USB_STREAM_ACTIVE_NONE;
     return;
   }
 
@@ -232,11 +375,12 @@ void usb_stream_service(void)
     {
       g_usb_stream.stats.tx_error++;
     }
+    g_usb_stream.active_ring = USB_STREAM_ACTIVE_NONE;
     return;
   }
 
   g_usb_stream.stats.tx_ok++;
-  usb_stream_pop_packet(active_ring);
+  g_usb_stream.tx_in_flight = 1U;
 }
 
 /* 函数说明：
@@ -256,6 +400,20 @@ void usb_stream_get_stats(usb_stream_stats_t *stats)
   }
 
   *stats = g_usb_stream.stats;
+}
+
+/* 函数说明：
+ *   标记当前 USB CDC 异步发送已经完成。
+ * 输入：
+ *   无。
+ * 输出：
+ *   无。
+ * 作用：
+ *   由 CDC_TransmitCplt_FS() 调用，发送完成前禁止 usb_stream_service() 复用全局 tx_buffer。
+ */
+void usb_stream_on_tx_complete(void)
+{
+  g_usb_stream.tx_complete_pending = 1U;
 }
 
 #ifdef UNIT_TEST

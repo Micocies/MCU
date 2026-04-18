@@ -73,6 +73,7 @@ static void drain_aux_queue(void)
   while ((usb_stream_test_get_aux_count() != 0U) && (guard != 0U))
   {
     usb_stream_service();
+    fake_usb_complete_tx();
     guard--;
   }
 }
@@ -307,6 +308,7 @@ static void test_fault_reporting_overflow_does_not_mask_root_fault(void)
 static void test_calibration_then_run_enqueues_sample(void)
 {
   const frame_packet_t *sent;
+  uint32_t i;
 
   reset_app_test();
   run_startup_to_comm_wait();
@@ -320,9 +322,17 @@ static void test_calibration_then_run_enqueues_sample(void)
 
   drain_aux_queue();
   fake_usb_reset();
+  for (i = 1U; i < (APP_SAMPLE_RATE_HZ / LOGICAL_FRAME_RATE_HZ); ++i)
+  {
+    run_one_triggered_sample(1100);
+    TEST_ASSERT_EQ_INT(APP_STATE_USB_FLUSH, app_test_get_state());
+    app_run_once();
+    TEST_ASSERT_EQ_INT(APP_STATE_WAIT_TRIGGER, app_test_get_state());
+    TEST_ASSERT_EQ_U32(0U, fake_usb_get_transmit_count());
+  }
+
   run_one_triggered_sample(1100);
   TEST_ASSERT_EQ_INT(APP_STATE_USB_FLUSH, app_test_get_state());
-
   app_run_once();
   TEST_ASSERT_EQ_INT(APP_STATE_WAIT_TRIGGER, app_test_get_state());
   TEST_ASSERT_EQ_U32(1U, fake_usb_get_transmit_count());

@@ -71,8 +71,12 @@
 #include "fault_policy.h"
 #include "frame_builder.h"
 #include "main.h"
+#include "project_config.h"
 #include "usb_stream.h"
 #include "version.h"
+
+#define APP_SAMPLES_PER_LOGICAL_FRAME (APP_SAMPLE_RATE_HZ / LOGICAL_FRAME_RATE_HZ)
+typedef char app_sample_rate_must_divide_frame_rate[(APP_SAMPLE_RATE_HZ % LOGICAL_FRAME_RATE_HZ) == 0U ? 1 : -1];
 
 extern DAC_HandleTypeDef hdac1;
 extern SPI_HandleTypeDef hspi1;
@@ -112,6 +116,7 @@ typedef struct
   uint32_t drdy_deadline_ms;        // 等待 DRDY 的截止时间戳，单位 ms
   uint32_t last_fault_report_ms;    // 上次故障帧发送的时间戳，单位 ms
   uint32_t frame_sequence;          // 10x10 图像帧序列号，仅对正常图像帧递增
+  uint32_t frame_sample_count;       // 距离上一图像帧已经处理的运行态样本数
   uint32_t meta_sequence;           // 元信息/故障帧序列号，避免打断样本连续性
   uint32_t calibration_count;       // 已累积的校准样本数量
   int64_t calibration_accumulator;  // 校准样本累加器，用于求暗态基线
@@ -730,6 +735,7 @@ static void app_handle_dark_calibrate_state(void)
   g_app.filter_valid = 0U;
   g_app.baseline_code = 0;
   g_app.corrected_code = 0;
+  g_app.frame_sample_count = 0U;
   g_app.fault_flags = 0U;
   app_start_timer();
   app_set_state(APP_STATE_WAIT_TRIGGER);
@@ -866,6 +872,15 @@ static void app_handle_usb_flush_state(void)
 {
   frame_packet_t frame;
 
+  /* ADS1220 当前仍按 1 kHz 单通道采样，V1.0 对外只发布 100 Hz 逻辑图像帧。 */
+  g_app.frame_sample_count++;
+  if (g_app.frame_sample_count < APP_SAMPLES_PER_LOGICAL_FRAME)
+  {
+    app_set_state(APP_STATE_WAIT_TRIGGER);
+    return;
+  }
+
+  g_app.frame_sample_count = 0U;
   frame_builder_build(&g_app.frame_builder,
                       &frame,
                       g_app.frame_sequence++,

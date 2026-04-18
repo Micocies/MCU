@@ -59,7 +59,7 @@ typedef struct
 
 /* 当前工程使用的一套默认启动值，后续可按通道、增益、速率继续细化。 */
 #define ADS1220_DEFAULT_CONFIG0          0x08U
-#define ADS1220_DEFAULT_CONFIG1          0x04U
+#define ADS1220_DEFAULT_CONFIG1          0b11010100U  // 通道配置见ADS1220数据手册，当前涡轮模式采样率2000SPS
 #define ADS1220_DEFAULT_CONFIG2          0x10U
 #define ADS1220_DEFAULT_CONFIG3          0x00U
 

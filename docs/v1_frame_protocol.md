@@ -55,6 +55,11 @@ Total frame size is:
 20 byte header + 400 byte payload = 420 bytes
 ```
 
+## Output Cadence
+
+The current ADS1220 sampling loop still runs at `APP_SAMPLE_RATE_HZ = 1000`.
+V1.0 publishes image frames at `LOGICAL_FRAME_RATE_HZ = 100`, so firmware builds one `frame_packet_t` after every 10 run-mode samples.
+
 ## CRC
 
 `crc16` uses CRC-16/CCITT with:

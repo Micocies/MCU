@@ -15,6 +15,7 @@ extern "C" {
 
 void fake_usb_reset(void);
 void fake_usb_set_transmit_status(uint8_t status);
+void fake_usb_complete_tx(void);
 uint32_t fake_usb_get_transmit_count(void);
 uint16_t fake_usb_get_last_len(void);
 const uint8_t *fake_usb_get_last_data(void);

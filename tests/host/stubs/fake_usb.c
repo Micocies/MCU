@@ -47,6 +47,11 @@ void fake_usb_set_transmit_status(uint8_t status)
  * 作用：
  *   用于断言 service 是否触发真实发送动作。
  */
+void fake_usb_complete_tx(void)
+{
+  usb_stream_on_tx_complete();
+}
+
 uint32_t fake_usb_get_transmit_count(void)
 {
   return g_transmit_count;

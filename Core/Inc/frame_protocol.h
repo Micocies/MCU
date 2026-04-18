@@ -22,15 +22,17 @@ typedef enum
   FRAME_TYPE_PLACEHOLDER = 3
 } frame_type_t;
 
-#if defined(__ICCARM__)
-#define FRAME_PACKED_STRUCT typedef __packed struct
-#define FRAME_PACKED_END(name) name
-#else
-#define FRAME_PACKED_STRUCT typedef struct __attribute__((packed))
-#define FRAME_PACKED_END(name) name
+#if defined(_MSC_VER)
+#pragma pack(push, 1)
 #endif
 
-FRAME_PACKED_STRUCT
+#if defined(__ICCARM__)
+typedef __packed struct
+#elif defined(__GNUC__) || defined(__clang__)
+typedef struct __attribute__((packed))
+#else
+typedef struct
+#endif
 {
   uint16_t magic;
   uint8_t version;
@@ -41,10 +43,11 @@ FRAME_PACKED_STRUCT
   uint32_t timestamp_us;
   uint16_t payload_bytes;
   uint16_t crc16;
-} FRAME_PACKED_END(frame_header_t);
+} frame_header_t;
 
-#undef FRAME_PACKED_STRUCT
-#undef FRAME_PACKED_END
+#if defined(_MSC_VER)
+#pragma pack(pop)
+#endif
 
 typedef struct
 {

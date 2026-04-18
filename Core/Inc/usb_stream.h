@@ -59,6 +59,8 @@ usb_stream_enqueue_result_t usb_stream_enqueue_aux(const sample_packet_t *pkt);
 /* 尝试把队列头部数据送往 USB CDC。 */
 void usb_stream_service(void);
 void usb_stream_get_stats(usb_stream_stats_t *stats);
+/* USB CDC 发送完成回调入口，只清除发送中状态，不做队列发送。 */
+void usb_stream_on_tx_complete(void);
 
 #ifdef UNIT_TEST
 /* UNIT_TEST 下的只读队列观察口，正式固件构建中不暴露这些接口。 */

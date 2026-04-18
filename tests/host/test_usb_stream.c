@@ -70,10 +70,14 @@ static void test_frame_packet_flushes_as_420_bytes(void)
   sent = fake_usb_get_last_frame();
   TEST_ASSERT_EQ_U32(1U, fake_usb_get_transmit_count());
   TEST_ASSERT_EQ_U32(sizeof(frame_packet_t), fake_usb_get_last_len());
-  TEST_ASSERT_EQ_U32(0U, usb_stream_test_get_frame_count());
+  TEST_ASSERT_EQ_U32(1U, usb_stream_test_get_frame_count());
   TEST_ASSERT_EQ_U32(10U, sent->header.frame_id);
   TEST_ASSERT_EQ_INT(1000, sent->pixels[0]);
   TEST_ASSERT_TRUE(frame_protocol_validate(sent));
+
+  fake_usb_complete_tx();
+  usb_stream_service();
+  TEST_ASSERT_EQ_U32(0U, usb_stream_test_get_frame_count());
 }
 
 static void test_usb_busy_keeps_frame_for_retry(void)
@@ -96,6 +100,40 @@ static void test_usb_busy_keeps_frame_for_retry(void)
   usb_stream_service();
 
   TEST_ASSERT_EQ_U32(2U, fake_usb_get_transmit_count());
+  TEST_ASSERT_EQ_U32(1U, usb_stream_test_get_frame_count());
+
+  fake_usb_complete_tx();
+  usb_stream_service();
+  TEST_ASSERT_EQ_U32(0U, usb_stream_test_get_frame_count());
+}
+
+static void test_in_flight_frame_blocks_tx_buffer_reuse_until_complete(void)
+{
+  frame_packet_t frame0 = make_frame(10U, 1000);
+  frame_packet_t frame1 = make_frame(11U, 2000);
+
+  reset_stream_test();
+
+  TEST_ASSERT_EQ_INT(USB_STREAM_ENQUEUE_OK, usb_stream_enqueue_frame(&frame0));
+  usb_stream_service();
+  TEST_ASSERT_EQ_U32(1U, fake_usb_get_transmit_count());
+  TEST_ASSERT_EQ_U32(10U, fake_usb_get_last_frame()->header.frame_id);
+  TEST_ASSERT_EQ_U32(1U, usb_stream_test_get_frame_count());
+
+  TEST_ASSERT_EQ_INT(USB_STREAM_ENQUEUE_OK, usb_stream_enqueue_frame(&frame1));
+  usb_stream_service();
+  TEST_ASSERT_EQ_U32(1U, fake_usb_get_transmit_count());
+  TEST_ASSERT_EQ_U32(10U, fake_usb_get_last_frame()->header.frame_id);
+  TEST_ASSERT_EQ_U32(2U, usb_stream_test_get_frame_count());
+
+  fake_usb_complete_tx();
+  usb_stream_service();
+  TEST_ASSERT_EQ_U32(2U, fake_usb_get_transmit_count());
+  TEST_ASSERT_EQ_U32(11U, fake_usb_get_last_frame()->header.frame_id);
+  TEST_ASSERT_EQ_U32(1U, usb_stream_test_get_frame_count());
+
+  fake_usb_complete_tx();
+  usb_stream_service();
   TEST_ASSERT_EQ_U32(0U, usb_stream_test_get_frame_count());
 }
 
@@ -136,14 +174,25 @@ static void test_aux_queue_stays_lower_priority_than_frame_queue(void)
   usb_stream_service();
   TEST_ASSERT_EQ_U32(sizeof(frame_packet_t), fake_usb_get_last_len());
   TEST_ASSERT_EQ_U32(42U, fake_usb_get_last_frame()->header.frame_id);
-  TEST_ASSERT_EQ_U32(0U, usb_stream_test_get_frame_count());
+  TEST_ASSERT_EQ_U32(1U, usb_stream_test_get_frame_count());
   TEST_ASSERT_EQ_U32(1U, usb_stream_test_get_aux_count());
 
   usb_stream_service();
+  TEST_ASSERT_EQ_U32(1U, fake_usb_get_transmit_count());
+  TEST_ASSERT_EQ_U32(1U, usb_stream_test_get_aux_count());
+
+  fake_usb_complete_tx();
+  usb_stream_service();
   sent_aux = fake_usb_get_last_packets();
+  TEST_ASSERT_EQ_U32(2U, fake_usb_get_transmit_count());
+  TEST_ASSERT_EQ_U32(0U, usb_stream_test_get_frame_count());
   TEST_ASSERT_EQ_U32(sizeof(sample_packet_t), fake_usb_get_last_len());
   TEST_ASSERT_EQ_U32(7U, sent_aux[0].sequence);
   TEST_ASSERT_TRUE((sent_aux[0].flags & SAMPLE_FLAG_INFO_FRAME) != 0U);
+  TEST_ASSERT_EQ_U32(1U, usb_stream_test_get_aux_count());
+
+  fake_usb_complete_tx();
+  usb_stream_service();
   TEST_ASSERT_EQ_U32(0U, usb_stream_test_get_aux_count());
 }
 
@@ -152,6 +201,7 @@ void test_usb_stream_run(void)
   test_init_is_empty_and_service_is_idle();
   test_frame_packet_flushes_as_420_bytes();
   test_usb_busy_keeps_frame_for_retry();
+  test_in_flight_frame_blocks_tx_buffer_reuse_until_complete();
   test_frame_overflow_records_stats_and_keeps_newest();
   test_aux_queue_stays_lower_priority_than_frame_queue();
 }
