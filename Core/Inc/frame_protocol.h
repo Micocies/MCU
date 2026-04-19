@@ -19,7 +19,8 @@ typedef enum
 {
   FRAME_TYPE_TEST = 1,
   FRAME_TYPE_PARTIAL_REAL = 2,
-  FRAME_TYPE_PLACEHOLDER = 3
+  FRAME_TYPE_PLACEHOLDER = 3,
+  FRAME_TYPE_FULL_REAL = 4
 } frame_type_t;
 
 #if defined(_MSC_VER)

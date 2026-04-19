@@ -1,4 +1,4 @@
-﻿/* USER CODE BEGIN Header */
+/* USER CODE BEGIN Header */
 /**
   ******************************************************************************
   * @file    stm32g4xx_it.h
@@ -46,7 +46,6 @@
 /* USER CODE END EM */
 
 /* Exported functions prototypes ---------------------------------------------*/
-/* Cortex-M 内核异常处理入口。 */
 void NMI_Handler(void);
 void HardFault_Handler(void);
 void MemManage_Handler(void);
@@ -56,14 +55,10 @@ void SVC_Handler(void);
 void DebugMon_Handler(void);
 void PendSV_Handler(void);
 void SysTick_Handler(void);
-/* 外设中断入口。
- * EXTI0 用于 ADS1220 DRDY。
- * TIM6_DAC 用于采样节拍。
- * USB_LP 用于 CDC 设备栈。 */
-void EXTI0_IRQHandler(void);
-void TIM6_DAC_IRQHandler(void);
 void USB_LP_IRQHandler(void);
 /* USER CODE BEGIN EFP */
+void EXTI0_IRQHandler(void);
+void TIM6_DAC_IRQHandler(void);
 
 /* USER CODE END EFP */
 
@@ -72,4 +67,3 @@ void USB_LP_IRQHandler(void);
 #endif
 
 #endif /* __STM32G4xx_IT_H */
-

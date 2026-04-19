@@ -1,4 +1,4 @@
-﻿/* USER CODE BEGIN Header */
+/* USER CODE BEGIN Header */
 /**
   ******************************************************************************
   * @file           : main.h
@@ -57,18 +57,26 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-/* ADS1220 数据就绪信号，低有效，接 EXTI0。 */
-#define ADC_DRDY_Pin GPIO_PIN_0
-#define ADC_DRDY_GPIO_Port GPIOB
-/* ADS1220 硬件复位脚。 */
-#define ADC_RST_Pin GPIO_PIN_1
-#define ADC_RST_GPIO_Port GPIOB
-/* ADS1220 START/SYNC 外部控制脚。 */
-#define ADC_START_Pin GPIO_PIN_2
-#define ADC_START_GPIO_Port GPIOB
-/* ADS1220 片选脚，空闲保持高电平。 */
-#define ADC_CS_Pin GPIO_PIN_15
-#define ADC_CS_GPIO_Port GPIOA
+#define SUB_SEL_A0_Pin GPIO_PIN_0
+#define SUB_SEL_A0_GPIO_Port GPIOA
+#define SUB_SEL_A1_Pin GPIO_PIN_1
+#define SUB_SEL_A1_GPIO_Port GPIOA
+#define SUB_SEL_A2_Pin GPIO_PIN_2
+#define SUB_SEL_A2_GPIO_Port GPIOA
+#define ADC_SEL_A0_Pin GPIO_PIN_3
+#define ADC_SEL_A0_GPIO_Port GPIOA
+#define ADC_DRDY_MUX_Pin GPIO_PIN_0
+#define ADC_DRDY_MUX_GPIO_Port GPIOB
+#define ADC_RST_ALL_Pin GPIO_PIN_1
+#define ADC_RST_ALL_GPIO_Port GPIOB
+#define ADC_START_ALL_Pin GPIO_PIN_2
+#define ADC_START_ALL_GPIO_Port GPIOB
+#define ADC_SEL_A1_Pin GPIO_PIN_8
+#define ADC_SEL_A1_GPIO_Port GPIOA
+#define ADC_SEL_A2_Pin GPIO_PIN_9
+#define ADC_SEL_A2_GPIO_Port GPIOA
+#define ADC_CS_GATE_Pin GPIO_PIN_15
+#define ADC_CS_GATE_GPIO_Port GPIOA
 
 /* USER CODE BEGIN Private defines */
 
@@ -79,4 +87,3 @@ void Error_Handler(void);
 #endif
 
 #endif /* __MAIN_H */
-

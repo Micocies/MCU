@@ -4,6 +4,15 @@
     <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\Core\Src\adc_protocol.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\Core\Src\adc_bus.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\Core\Src\ads1220_device.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\Core\Src\ads1220_scheduler.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="D:\code\MCU\STM32G431CBT_MCU\Core\Src\diag.c">
       <Filter>Source Files</Filter>
     </ClCompile>

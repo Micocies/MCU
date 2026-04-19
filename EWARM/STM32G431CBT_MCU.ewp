@@ -1084,15 +1084,6 @@
       <group>
         <name>Core</name>
         <file>
-          <name>$PROJ_DIR$/../Core/Src/main.c</name>
-        </file>
-        <file>
-          <name>$PROJ_DIR$/../Core/Src/stm32g4xx_it.c</name>
-        </file>
-        <file>
-          <name>$PROJ_DIR$/../Core/Src/stm32g4xx_hal_msp.c</name>
-        </file>
-        <file>
           <name>$PROJ_DIR$/../Core/Src/app.c</name>
         </file>
         <file>
@@ -1108,6 +1099,15 @@
           <name>$PROJ_DIR$/../Core/Src/adc_protocol.c</name>
         </file>
         <file>
+          <name>$PROJ_DIR$/../Core/Src/adc_bus.c</name>
+        </file>
+        <file>
+          <name>$PROJ_DIR$/../Core/Src/ads1220_device.c</name>
+        </file>
+        <file>
+          <name>$PROJ_DIR$/../Core/Src/ads1220_scheduler.c</name>
+        </file>
+        <file>
           <name>$PROJ_DIR$/../Core/Src/board_topology.c</name>
         </file>
         <file>
@@ -1121,6 +1121,15 @@
         </file>
         <file>
           <name>$PROJ_DIR$/../Core/Src/usb_stream.c</name>
+        </file>
+        <file>
+          <name>$PROJ_DIR$/../Core/Src/main.c</name>
+        </file>
+        <file>
+          <name>$PROJ_DIR$/../Core/Src/stm32g4xx_it.c</name>
+        </file>
+        <file>
+          <name>$PROJ_DIR$/../Core/Src/stm32g4xx_hal_msp.c</name>
         </file>
       </group>
       <group>

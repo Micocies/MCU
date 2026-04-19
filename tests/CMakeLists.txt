@@ -6,6 +6,9 @@ enable_testing()
 
 add_executable(host_tests
   ../Core/Src/adc_protocol.c
+  ../Core/Src/adc_bus.c
+  ../Core/Src/ads1220_device.c
+  ../Core/Src/ads1220_scheduler.c
   ../Core/Src/diag.c
   ../Core/Src/fault_policy.c
   ../Core/Src/board_topology.c

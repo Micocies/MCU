@@ -21,7 +21,7 @@ extern "C" {
 #define LOGICAL_FRAME_RATE_HZ    100U
 #define FRAME_PERIOD_MS          10U
 
-/* Only pixel 0 is backed by the current single ADS1220 signal path in V1.0. */
+/* Legacy partial-real frame_builder mode keeps its V1.0 injection pixel. */
 #define PROJECT_ACTIVE_PIXEL_ID  0U
 
 #ifdef __cplusplus

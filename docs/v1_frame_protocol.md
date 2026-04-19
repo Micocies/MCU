@@ -31,6 +31,7 @@ Field values:
 - `frame_type = 1`: deterministic test frame
 - `frame_type = 2`: partial-real frame, currently pixel `0` real and the rest test pattern
 - `frame_type = 3`: placeholder frame
+- `frame_type = 4`: full-real frame, all 100 pixels are populated from the fixed 25-device ADS1220 polling buffer
 - `width = 10`
 - `height = 10`
 - `payload_bytes = 400`
@@ -57,8 +58,7 @@ Total frame size is:
 
 ## Output Cadence
 
-The current ADS1220 sampling loop still runs at `APP_SAMPLE_RATE_HZ = 1000`.
-V1.0 publishes image frames at `LOGICAL_FRAME_RATE_HZ = 100`, so firmware builds one `frame_packet_t` after every 10 run-mode samples.
+V1.1 uses the fixed 25-device scheduler to fill the full 100-pixel buffer. Firmware sends a `FRAME_TYPE_FULL_REAL` frame when the scheduler has completed one 25-device x 4-channel scan and a TIM6 output permit is available.
 
 ## CRC
 

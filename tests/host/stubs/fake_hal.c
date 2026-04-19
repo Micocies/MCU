@@ -19,6 +19,7 @@ static uint32_t g_tim_stop_count;
 static uint32_t g_start_sync_count;
 static uint8_t g_last_spi_tx[16];
 static uint16_t g_last_spi_size;
+static uint8_t g_last_config[ADS1220_REG_COUNT];
 static int32_t g_raw_queue[512];
 static uint32_t g_raw_head;
 static uint32_t g_raw_tail;
@@ -48,6 +49,10 @@ void fake_hal_reset(void)
   g_start_sync_count = 0U;
   memset(g_last_spi_tx, 0, sizeof(g_last_spi_tx));
   g_last_spi_size = 0U;
+  g_last_config[0] = ADS1220_DEFAULT_CONFIG0;
+  g_last_config[1] = ADS1220_DEFAULT_CONFIG1;
+  g_last_config[2] = ADS1220_DEFAULT_CONFIG2;
+  g_last_config[3] = ADS1220_DEFAULT_CONFIG3;
   g_raw_head = 0U;
   g_raw_tail = 0U;
   g_raw_count = 0U;
@@ -271,6 +276,13 @@ void HAL_GPIO_WritePin(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin, GPIO_PinState Pin
   g_gpio_write_count++;
 }
 
+GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin)
+{
+  UNUSED(GPIOx);
+  UNUSED(GPIO_Pin);
+  return GPIO_PIN_SET;
+}
+
 /* 函数说明：
  *   fake SPI 全双工传输。
  * 输入：
@@ -303,6 +315,14 @@ HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *hspi,
   {
     g_start_sync_count++;
   }
+  if ((pTxData != 0) && (Size == (uint16_t)(1U + ADS1220_REG_COUNT)) &&
+      (pTxData[0] == ADS1220_CMD_WREG(ADS1220_REG_CONFIG0, ADS1220_REG_COUNT)))
+  {
+    g_last_config[0] = pTxData[1];
+    g_last_config[1] = pTxData[2];
+    g_last_config[2] = pTxData[3];
+    g_last_config[3] = pTxData[4];
+  }
 
   if ((pRxData != 0) && (Size != 0U))
   {
@@ -310,10 +330,10 @@ HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *hspi,
     if ((pTxData != 0) && (Size == (uint16_t)(1U + ADS1220_REG_COUNT)) &&
         (pTxData[0] == ADS1220_CMD_RREG(ADS1220_REG_CONFIG0, ADS1220_REG_COUNT)))
     {
-      pRxData[1] = (g_config_mismatch == 0U) ? ADS1220_DEFAULT_CONFIG0 : (uint8_t)(ADS1220_DEFAULT_CONFIG0 ^ 0x01U);
-      pRxData[2] = ADS1220_DEFAULT_CONFIG1;
-      pRxData[3] = ADS1220_DEFAULT_CONFIG2;
-      pRxData[4] = ADS1220_DEFAULT_CONFIG3;
+      pRxData[1] = (g_config_mismatch == 0U) ? g_last_config[0] : (uint8_t)(g_last_config[0] ^ 0x01U);
+      pRxData[2] = g_last_config[1];
+      pRxData[3] = g_last_config[2];
+      pRxData[4] = g_last_config[3];
     }
   }
 

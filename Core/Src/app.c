@@ -1,103 +1,22 @@
-﻿/* ============================================================================
- * 应用层总览
- *
- * 状态机主流程：
- *
- *   上电
- *    |
- *    v
- *   APP_STATE_INIT
- *    |  复位 ADS1220
- *    |  写默认寄存器
- *    |  启动 DAC 偏置
- *    v
- *   APP_STATE_BIAS_STABILIZE
- *    |  等待模拟前端稳定
- *    v
- *   APP_STATE_COMM_CHECK
- *    |  启动 ADS1220 continuous conversion 一次
- *    v
- *   APP_STATE_WAIT_DRDY
- *    |  等待 DRDY 下降沿
- *    v
- *   APP_STATE_READ_SAMPLE
- *    |  SPI 读取 3 字节
- *    v
- *   APP_STATE_PROCESS_SAMPLE
- *    |  通信正常 -> 进入暗态校准
- *    |  通信异常 -> 进入故障
- *    v
- *   APP_STATE_DARK_CALIBRATE
- *    |  继续使用 continuous + DRDY 采集 N 个样本求均值基线
- *    v
- *   APP_STATE_WAIT_TRIGGER <----- TIM6 1 kHz 输出许可
- *    |                                ^
- *    | 等待输出许可，不启动 ADC         |
- *    v                                |
- *   APP_STATE_WAIT_DRDY --------------+
- *    |
- *    v
- *   APP_STATE_READ_SAMPLE
- *    |
- *    v
- *   APP_STATE_PROCESS_SAMPLE
- *    |  原始值 -> IIR 滤波 -> 基线扣除 -> 时间戳
- *    v
- *   APP_STATE_USB_FLUSH
- *    |  结果入 USB 队列
- *    +-------------------------------> 回到 WAIT_DRDY
- *
- * 时序关系：
- *   ADS1220 默认配置为 turbo + 2000 SPS + continuous conversion。
- *   START/SYNC 只在上电自检或恢复后调用一次；运行中 DRDY 表示最近一个
- *   ADC 样本已经完成，主循环据此读 24 bit 数据。TIM6 只产生 1 kHz
- *   输出许可，不再作为 ADC 转换启动信号。运行态显式采用 2 个 DRDY
- *   取 1 个输出样本候选，再与 TIM6 输出许可共同决定是否进入 USB_FLUSH。
- *
- * 异常路径：
- *   任意阶段发现超时、SPI 错误或配置回读失败
- *    -> APP_STATE_RECOVER
- *    -> 按策略重试或重配；连续失败后进入 APP_STATE_FAULT
- *
- * 模块分工：
- *   main.c         : CubeMX 外设初始化 + 主循环入口
- *   app.c          : 状态机调度、滤波、暗态校准、数据打包
- *   adc_protocol.c : ADS1220 命令、寄存器、读数和码值解析
- *   frame_builder.c: 固定 100 pixels 图像帧构造
- *   usb_stream.c   : USB CDC 图像帧/辅助双队列和重试发送
- *   stm32g4xx_it.c : EXTI0 / TIM6 / USB 中断转发
- * ==========================================================================*/
-
 #include "app.h"
 
 #include <string.h>
 
+#include "adc_bus.h"
 #include "adc_protocol.h"
+#include "ads1220_device.h"
+#include "ads1220_scheduler.h"
 #include "app_config.h"
 #include "diag.h"
 #include "fault_policy.h"
 #include "frame_builder.h"
-#include "main.h"
 #include "project_config.h"
 #include "usb_stream.h"
 #include "version.h"
 
-#define APP_SAMPLES_PER_LOGICAL_FRAME (APP_SAMPLE_RATE_HZ / LOGICAL_FRAME_RATE_HZ)
-typedef char app_sample_rate_must_divide_frame_rate[(APP_SAMPLE_RATE_HZ % LOGICAL_FRAME_RATE_HZ) == 0U ? 1 : -1];
-typedef char app_adc_rate_must_divide_output_rate[(APP_ADC_CONTINUOUS_DATA_RATE_HZ % APP_SAMPLE_RATE_HZ) == 0U ? 1 : -1];
-typedef char app_adc_decimation_must_be_nonzero[(APP_ADC_SAMPLES_PER_OUTPUT > 0U) ? 1 : -1];
-
 extern DAC_HandleTypeDef hdac1;
 extern SPI_HandleTypeDef hspi1;
 extern TIM_HandleTypeDef htim6;
-
-/* 状态机内部还要区分“当前样本是用于自检、校准还是正常运行”。 */
-typedef enum
-{
-  APP_PIPELINE_COMM_CHECK = 0,  //自检
-  APP_PIPELINE_CALIBRATION,     //校准
-  APP_PIPELINE_RUN              //正常运行
-} app_pipeline_mode_t;
 
 typedef enum
 {
@@ -116,71 +35,42 @@ typedef enum
 
 typedef struct
 {
-  volatile uint32_t pending_output_ticks; // TIM6 1 kHz 输出许可计数
-  volatile uint32_t pending_drdy_count;   // ADS1220 DRDY 数据就绪事件计数
-  volatile uint8_t command_flags;   // USB 命令请求标志，由 CDC 接收回调置位
-  app_state_t state;                // 当前状态
-  app_pipeline_mode_t pipeline_mode;// 当前样本所属的流水线阶段
-  uint32_t state_enter_ms;          // 进入当前状态的时间戳，单位 ms
-  uint32_t drdy_deadline_ms;        // 等待 DRDY 的截止时间戳，单位 ms
-  uint32_t last_fault_report_ms;    // 上次故障帧发送的时间戳，单位 ms
-  uint32_t frame_sequence;          // 10x10 图像帧序列号，仅对正常图像帧递增
-  uint32_t frame_sample_count;       // 距离上一图像帧已经处理的运行态样本数
-  uint32_t meta_sequence;           // 元信息/故障帧序列号，避免打断样本连续性
-  uint32_t drdy_events_for_sample;   // 本次读样前累计到的 DRDY 事件数量
-  uint32_t run_drdy_decimator;       // 运行态按 DRDY 计数做 2 kSPS -> 1 kHz 降采样
-  uint32_t calibration_count;       // 已累积的校准样本数量
-  int64_t calibration_accumulator;  // 校准样本累加器，用于求暗态基线
-  int32_t raw_code;                 // 当前原始 ADC 码值
-  int32_t filtered_code;            // 当前滤波结果
-  int32_t baseline_code;            // 当前基线值（暗态均值）
-  int32_t corrected_code;           // 当前扣除基线后的码值
-  uint16_t fault_flags;             // 当前故障标志位，按位定义见 SAMPLE_FLAG_XXX
-  uint16_t recovery_fault_flags;     // 触发当前恢复动作的故障标志
-  uint8_t filter_valid;             // 滤波器是否已初始化
-  uint8_t continuous_started;       // ADS1220 continuous 链路是否已经启动
-  uint8_t latest_sample_valid;      // 是否已有一个降采样后的最新运行样本等待输出许可
-  uint8_t last_adc_status;          // 最近一次 ADC 协议层状态码
-  uint8_t last_usb_status;          // 最近一次 USB 入队结果码
-  diag_fault_code_t last_fault_code; // 最近一次细分故障码
-  diag_recovery_action_t recovery_action; // 当前待执行恢复动作
-  frame_builder_t frame_builder;     // 固定 100 pixels 图像帧构造器
-} app_context_t;                    // 应用状态机上下文
+  volatile uint32_t pending_output_ticks;
+  volatile uint32_t pending_drdy_count;
+  volatile uint8_t command_flags;
+  app_state_t state;
+  uint32_t state_enter_ms;
+  uint32_t last_fault_report_ms;
+  uint32_t frame_sequence;
+  uint32_t meta_sequence;
+  uint16_t fault_flags;
+  uint16_t recovery_fault_flags;
+  uint8_t last_adc_status;
+  uint8_t last_usb_status;
+  uint8_t pending_drdy_device_id;
+  uint8_t pending_drdy_channel_id;
+  diag_fault_code_t last_fault_code;
+  diag_recovery_action_t recovery_action;
+  adc_bus_t adc_bus;
+  ads1220_scheduler_t scheduler;
+  frame_builder_t frame_builder;
+  int32_t pixels[PIXEL_COUNT];
+} app_context_t;
 
 static app_context_t g_app;
 
-/* 函数说明：
- *   切换应用状态，并刷新该状态的进入时刻。
- * 输入：
- *   state: 目标状态。
- * 输出：
- *   无。
- * 作用：
- *   给状态机统一维护状态切换时间基准。
- */
 static void app_set_state(app_state_t state)
 {
   g_app.state = state;
   g_app.state_enter_ms = HAL_GetTick();
 }
 
-/* 函数说明：
- *   判断从起始时刻到现在是否已经超过指定时长。
- * 输入：
- *   start_ms: 起始时间戳，单位 ms。
- *   duration_ms: 目标时长，单位 ms。
- * 输出：
- *   true : 已达到或超过目标时长。
- *   false: 尚未达到目标时长。
- * 作用：
- *   用于状态机中的超时与等待判断。
- */
 static bool app_has_elapsed(uint32_t start_ms, uint32_t duration_ms)
 {
   return ((HAL_GetTick() - start_ms) >= duration_ms);
 }
 
-static void app_clear_pending_sampling_events(void)
+static void app_clear_pending_events(void)
 {
   uint32_t primask;
 
@@ -188,27 +78,62 @@ static void app_clear_pending_sampling_events(void)
   __disable_irq();
   g_app.pending_output_ticks = 0U;
   g_app.pending_drdy_count = 0U;
+  g_app.pending_drdy_device_id = 0xFFU;
+  g_app.pending_drdy_channel_id = 0xFFU;
   if (primask == 0U)
   {
     __enable_irq();
   }
 }
 
-static uint32_t app_take_pending_drdy_count(void)
+static void app_clear_pending_drdy_events(void)
 {
   uint32_t primask;
-  uint32_t count;
 
   primask = __get_PRIMASK();
   __disable_irq();
-  count = g_app.pending_drdy_count;
   g_app.pending_drdy_count = 0U;
+  g_app.pending_drdy_device_id = 0xFFU;
+  g_app.pending_drdy_channel_id = 0xFFU;
+#ifndef UNIT_TEST
+  __HAL_GPIO_EXTI_CLEAR_IT(ADC_DRDY_MUX_Pin);
+#endif
+  if (primask == 0U)
+  {
+    __enable_irq();
+  }
+}
+
+static bool app_take_selected_drdy_event(void)
+{
+  uint32_t primask;
+  bool pending = false;
+  uint8_t device_id;
+  uint8_t channel_id;
+
+  device_id = ads1220_scheduler_current_device_id(&g_app.scheduler);
+  channel_id = ads1220_scheduler_current_channel_id(&g_app.scheduler);
+
+  primask = __get_PRIMASK();
+  __disable_irq();
+  if ((g_app.pending_drdy_count != 0U) &&
+      (g_app.pending_drdy_device_id == device_id) &&
+      (g_app.pending_drdy_channel_id == channel_id))
+  {
+    g_app.pending_drdy_count--;
+    pending = true;
+    if (g_app.pending_drdy_count == 0U)
+    {
+      g_app.pending_drdy_device_id = 0xFFU;
+      g_app.pending_drdy_channel_id = 0xFFU;
+    }
+  }
   if (primask == 0U)
   {
     __enable_irq();
   }
 
-  return count;
+  return pending;
 }
 
 static bool app_consume_output_tick(void)
@@ -231,28 +156,6 @@ static bool app_consume_output_tick(void)
   return consumed;
 }
 
-static void app_clear_pending_output_ticks(void)
-{
-  uint32_t primask;
-
-  primask = __get_PRIMASK();
-  __disable_irq();
-  g_app.pending_output_ticks = 0U;
-  if (primask == 0U)
-  {
-    __enable_irq();
-  }
-}
-
-/* 函数说明：
- *   获取当前时间戳。
- * 输入：
- *   无。
- * 输出：
- *   返回当前时间戳，单位 us。
- * 作用：
- *   优先使用 DWT 周期计数器生成微秒级时间戳，若不可用则退化为毫秒 tick。
- */
 static uint32_t app_get_timestamp_us(void)
 {
   if ((CoreDebug->DEMCR & CoreDebug_DEMCR_TRCENA_Msk) == 0U)
@@ -263,31 +166,13 @@ static uint32_t app_get_timestamp_us(void)
   return (uint32_t)(DWT->CYCCNT / (SystemCoreClock / 1000000U));
 }
 
-/* 函数说明：
- *   使能 DWT 周期计数器。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   为微秒级时间戳提供硬件计数基础。
- */
 static void app_enable_cycle_counter(void)
 {
-  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk; // 使能 DWT 访问权限
-  DWT->CYCCNT = 0U;                               // 复位周期计数器    
-  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;            // 使能周期计数器
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0U;
+  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 }
 
-/* 函数说明：
- *   启动 TIM6 周期中断。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   作为采样状态机的统一节拍源。
- */
 static void app_start_timer(void)
 {
   __HAL_TIM_SET_COUNTER(&htim6, 0U);
@@ -295,31 +180,12 @@ static void app_start_timer(void)
   HAL_TIM_Base_Start_IT(&htim6);
 }
 
-/* 函数说明：
- *   停止 TIM6 周期中断。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   终止后续采样节拍。
- */
 static void app_stop_timer(void)
 {
   HAL_TIM_Base_Stop_IT(&htim6);
   __HAL_TIM_CLEAR_FLAG(&htim6, TIM_FLAG_UPDATE);
 }
 
-/* 函数说明：
- *   启动并设置默认前端偏置。
- * 输入：
- *   无。
- * 输出：
- *   true : 成功。
- *   false: 失败。
- * 作用：
- *   收口 DAC 启动和默认偏置设置，减少状态机中的硬件细节散落。
- */
 static bool app_frontend_bias_start_default(void)
 {
   if (HAL_DAC_Start(&hdac1, DAC_CHANNEL_1) != HAL_OK)
@@ -345,8 +211,50 @@ static bool app_frontend_bias_start_default(void)
   return true;
 }
 
-static uint16_t app_flags_from_adc_status(adc_protocol_status_t status)
+static void app_prepare_packet(sample_packet_t *pkt, uint16_t flags, uint16_t reserved, uint32_t sequence)
 {
+  memset(pkt, 0, sizeof(*pkt));
+  pkt->magic = SAMPLE_PACKET_MAGIC;
+  pkt->version = SAMPLE_PACKET_VERSION;
+  pkt->state = (uint8_t)g_app.state;
+  pkt->flags = flags;
+  pkt->reserved = reserved;
+  pkt->sequence = sequence;
+  pkt->timestamp_us = app_get_timestamp_us();
+}
+
+static void app_build_meta_packet(sample_packet_t *pkt,
+                                  uint16_t flags,
+                                  uint16_t subtype,
+                                  int32_t payload0,
+                                  int32_t payload1,
+                                  int32_t payload2,
+                                  int32_t payload3)
+{
+  app_prepare_packet(pkt, flags, subtype, g_app.meta_sequence++);
+  pkt->raw_code = payload0;
+  pkt->filtered_code = payload1;
+  pkt->baseline_code = payload2;
+  pkt->corrected_code = payload3;
+}
+
+static void app_record_usb_enqueue(usb_stream_enqueue_result_t result)
+{
+  g_app.last_usb_status = (uint8_t)result;
+  if (result == USB_STREAM_ENQUEUE_OK_DROPPED_OLDEST)
+  {
+    g_app.fault_flags |= SAMPLE_FLAG_USB_OVERFLOW;
+  }
+}
+
+static uint16_t app_flags_from_adc_status(adc_protocol_status_t status,
+                                          ads1220_scheduler_state_t error_state)
+{
+  if ((status == ADC_PROTOCOL_ERR_TIMEOUT) && (error_state == ADS1220_SCHED_WAIT_DRDY))
+  {
+    return SAMPLE_FLAG_DRDY_TIMEOUT;
+  }
+
   if (status == ADC_PROTOCOL_ERR_TIMEOUT)
   {
     return (uint16_t)(SAMPLE_FLAG_SPI_ERROR | SAMPLE_FLAG_SPI_TIMEOUT);
@@ -360,8 +268,14 @@ static uint16_t app_flags_from_adc_status(adc_protocol_status_t status)
   return SAMPLE_FLAG_SPI_ERROR;
 }
 
-static diag_fault_code_t app_fault_code_from_adc_status(adc_protocol_status_t status)
+static diag_fault_code_t app_fault_code_from_adc_status(adc_protocol_status_t status,
+                                                        ads1220_scheduler_state_t error_state)
 {
+  if ((status == ADC_PROTOCOL_ERR_TIMEOUT) && (error_state == ADS1220_SCHED_WAIT_DRDY))
+  {
+    return DIAG_FAULT_DRDY_TIMEOUT;
+  }
+
   if (status == ADC_PROTOCOL_ERR_TIMEOUT)
   {
     return DIAG_FAULT_SPI_TIMEOUT;
@@ -375,30 +289,13 @@ static diag_fault_code_t app_fault_code_from_adc_status(adc_protocol_status_t st
   return DIAG_FAULT_SPI_ERROR;
 }
 
-static void app_record_usb_enqueue(usb_stream_enqueue_result_t result, bool preserve_fault_root)
-{
-  g_app.last_usb_status = (uint8_t)result;
-  if (result == USB_STREAM_ENQUEUE_OK_DROPPED_OLDEST)
-  {
-    if (preserve_fault_root != false)
-    {
-      diag_count_fault(DIAG_FAULT_USB_BUSY_OVERFLOW, g_app.last_usb_status);
-    }
-    else
-    {
-      diag_record_fault(DIAG_FAULT_USB_BUSY_OVERFLOW, g_app.last_usb_status);
-    }
-  }
-}
-
 static void app_enter_fault_hold(uint16_t reason_flags)
 {
   g_app.fault_flags |= reason_flags;
   app_stop_timer();
-  (void)adc_protocol_stop_continuous();
-  g_app.continuous_started = 0U;
-  g_app.latest_sample_valid = 0U;
-  app_clear_pending_sampling_events();
+  ads1220_scheduler_stop(&g_app.scheduler);
+  adc_bus_cs_deassert();
+  app_clear_pending_events();
   g_app.last_fault_report_ms = HAL_GetTick() - APP_FAULT_REPORT_INTERVAL_MS;
   app_set_state(APP_STATE_FAULT);
 }
@@ -431,198 +328,46 @@ static void app_schedule_recovery(diag_fault_code_t code, uint16_t reason_flags)
   g_app.recovery_action = decision.action;
   g_app.recovery_fault_flags = reason_flags;
   app_stop_timer();
-  (void)adc_protocol_stop_continuous();
-  g_app.continuous_started = 0U;
-  g_app.latest_sample_valid = 0U;
-  app_clear_pending_sampling_events();
+  ads1220_scheduler_stop(&g_app.scheduler);
+  app_clear_pending_events();
   app_set_state(APP_STATE_RECOVER);
 }
 
-static void app_enter_wait_drdy(void)
+static void app_finish_recovery(diag_recovery_action_t action, bool success)
 {
-  g_app.drdy_deadline_ms = HAL_GetTick() + APP_DRDY_TIMEOUT_MS;
-  app_set_state(APP_STATE_WAIT_DRDY);
+  diag_record_recovery(action, (success != false) ? DIAG_RECOVERY_RESULT_SUCCESS : DIAG_RECOVERY_RESULT_FAILED);
+  fault_policy_record_recovery_result(action, success);
 }
 
-/* 函数说明：
- *   确保 ADS1220 continuous conversion 链路已经启动。
- * 输入：
- *   pipeline_mode: 当前采样属于自检、校准或运行阶段。
- * 输出：
- *   true : continuous 已经在运行或启动成功。
- *   false: START/SYNC 失败，已调度恢复。
- * 作用：
- *   START/SYNC 只在上电自检或恢复后调用一次。后续样本完全由 DRDY
- *   事件驱动读取，TIM6 不再触发 adc_protocol_start_conversion()。
- */
-static bool app_ensure_continuous_started(app_pipeline_mode_t pipeline_mode)
+static adc_protocol_status_t app_reconfigure_current_device(void)
 {
+  ads1220_device_t *dev;
+  uint8_t device_id;
+  uint8_t channel_id;
   adc_protocol_status_t status;
 
-  g_app.pipeline_mode = pipeline_mode;
-  if (g_app.continuous_started != 0U)
+  device_id = ads1220_scheduler_current_device_id(&g_app.scheduler);
+  channel_id = ads1220_scheduler_current_channel_id(&g_app.scheduler);
+
+  adc_bus_reset_all();
+  adc_bus_start_all_pulse();
+  ads1220_device_table_init();
+
+  dev = ads1220_device_get(device_id);
+  if (dev == 0)
   {
-    return true;
+    return ADC_PROTOCOL_ERR_INVALID_ARG;
   }
 
-  (void)app_take_pending_drdy_count();
-  status = adc_protocol_start_continuous();
-  g_app.last_adc_status = (uint8_t)status;
-  if (status != ADC_PROTOCOL_OK)
+  status = ads1220_device_configure_channel(dev, channel_id);
+  if (status == ADC_PROTOCOL_OK)
   {
-    app_schedule_recovery(app_fault_code_from_adc_status(status),
-                          (uint16_t)(app_flags_from_adc_status(status) |
-                                     ((pipeline_mode == APP_PIPELINE_COMM_CHECK) ? SAMPLE_FLAG_COMM_CHECK_FAILED : 0U)));
-    return false;
+    status = ads1220_device_link_check(dev);
   }
 
-  g_app.continuous_started = 1U;
-  return true;
+  return status;
 }
 
-static bool app_try_schedule_output_flush(void)
-{
-  if ((g_app.pipeline_mode != APP_PIPELINE_RUN) || (g_app.latest_sample_valid == 0U))
-  {
-    return false;
-  }
-
-  if (!app_consume_output_tick())
-  {
-    return false;
-  }
-
-  g_app.latest_sample_valid = 0U;
-  app_set_state(APP_STATE_USB_FLUSH);
-  return true;
-}
-
-/* 函数说明：
- *   更新 IIR 滤波结果。
- * 输入：
- *   raw_code: 当前原始 ADC 码值。
- * 输出：
- *   返回更新后的滤波值。
- * 作用：
- *   使用整数 IIR 低通减少运行态噪声。
- */
-static int32_t app_filter_raw_code(int32_t raw_code)
-{
-  if (g_app.filter_valid == 0U)
-  {
-    g_app.filter_valid = 1U;
-    g_app.filtered_code = raw_code;
-  }
-  else
-  {
-    g_app.filtered_code += (raw_code - g_app.filtered_code) / (int32_t)(1UL << APP_FILTER_ALPHA_SHIFT);// APP_FILTER_ALPHA_SHIFT 定义了滤波器的平滑程度，值越大响应越慢但噪声越小。
-  }
-
-  return g_app.filtered_code;
-}
-
-/* 函数说明：
- *   初始化一个固定 32 字节辅助 USB 帧头。
- * 输入：
- *   pkt: 输出数据包指针。
- *   flags: 当前包附带的状态标志。
- *   reserved: 元信息帧时保存子类型，故障帧时保存链路状态。
- *   sequence: 当前帧使用的序列号。
- * 输出：
- *   无。
- * 作用：
- *   统一填充辅助包头字段，故障/元信息帧共享这一步。
- */
-static void app_prepare_packet(sample_packet_t *pkt, uint16_t flags, uint16_t reserved, uint32_t sequence)
-{
-  memset(pkt, 0, sizeof(*pkt));
-  pkt->magic = SAMPLE_PACKET_MAGIC;       // 固定包头，便于上位机识别帧边界
-  pkt->version = SAMPLE_PACKET_VERSION;   // 包格式版本，便于后续升级兼容
-  pkt->state = (uint8_t)g_app.state;      // 当前状态机状态，便于上位机了解采样上下文 
-  pkt->flags = flags;                     // 当前样本的状态标志，按位定义见 SAMPLE_FLAG_XXX
-  pkt->reserved = reserved;
-  pkt->sequence = sequence;
-  pkt->timestamp_us = app_get_timestamp_us(); // 当前时间戳，单位 us
-}
-
-/* 函数说明：
- *   构造一个普通样本数据包。
- * 输入：
- *   pkt: 输出数据包指针。
- *   flags: 当前包附带的状态标志。
- * 输出：
- *   无。
- * 作用：
- *   将当前采样上下文打包成固定 32 字节 USB 样本帧。
- */
-/* 函数说明：
- *   构造一个元信息帧。
- * 输入：
- *   pkt: 输出数据包指针。
- *   flags: 当前包附带的元信息标志。
- *   subtype: 元信息子类型编号。
- *   payload0~3: 4 个 32 bit 元信息负载。
- * 输出：
- *   无。
- * 作用：
- *   在不改变固定样本格式长度的前提下复用同一帧结构发送版本和参数。
- */
-static void app_build_meta_packet(sample_packet_t *pkt,
-                                  uint16_t flags,
-                                  uint16_t subtype,
-                                  int32_t payload0,
-                                  int32_t payload1,
-                                  int32_t payload2,
-                                  int32_t payload3)
-{
-  app_prepare_packet(pkt, flags, subtype, g_app.meta_sequence++);
-  pkt->raw_code = payload0;
-  pkt->filtered_code = payload1;
-  pkt->baseline_code = payload2;
-  pkt->corrected_code = payload3;
-}
-
-/* 函数说明：
- *   构造一个故障状态帧。
- * 输入：
- *   pkt: 输出数据包指针。
- *   flags: 当前故障帧标志。
- * 输出：
- *   无。
- * 作用：
- *   故障态沿用 32 字节辅助负载布局回传最近一次测量上下文。
- */
-static void app_build_fault_packet(sample_packet_t *pkt, uint16_t flags)
-{
-  diag_snapshot_t diag_snapshot;
-  fault_policy_snapshot_t policy_snapshot;
-
-  diag_get_snapshot(&diag_snapshot);
-  fault_policy_get_snapshot(&policy_snapshot);
-
-  app_prepare_packet(pkt,
-                     flags,
-                     (uint16_t)(((uint16_t)g_app.last_usb_status << 8) | diag_snapshot.last_protocol_status),
-                     g_app.meta_sequence++);
-  pkt->raw_code = (int32_t)diag_snapshot.last_fault;
-  pkt->filtered_code = (int32_t)diag_get_fault_count(diag_snapshot.last_fault);
-  pkt->baseline_code = (int32_t)(((uint32_t)diag_snapshot.reset_reason << 16) |
-                                 ((uint32_t)diag_snapshot.last_recovery_action << 8) |
-                                 (uint32_t)diag_snapshot.last_recovery_result);
-  pkt->corrected_code = (int32_t)(((policy_snapshot.consecutive_failures & 0xFFFFUL) << 16) |
-                                  (policy_snapshot.recovery_attempts & 0xFFFFUL));
-}
-
-/* 函数说明：
- *   发送一组基线版本与参数帧。
- * 输入：
- *   send_info: 是否发送版本/签名信息帧。
- *   send_params: 是否发送参数冻结信息帧。
- * 输出：
- *   无。
- * 作用：
- *   支持上电自动上报，也支持上位机通过命令重发基线描述。
- */
 static void app_send_baseline_metadata(uint8_t send_info, uint8_t send_params)
 {
   sample_packet_t pkt;
@@ -640,7 +385,7 @@ static void app_send_baseline_metadata(uint8_t send_info, uint8_t send_params)
                           (int32_t)descriptor.build_number,
                           (int32_t)descriptor.packet_version,
                           (int32_t)descriptor.param_signature);
-    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt), true);
+    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt));
   }
 
   if (send_params != 0U)
@@ -652,16 +397,16 @@ static void app_send_baseline_metadata(uint8_t send_info, uint8_t send_params)
                           (int32_t)APP_BIAS_STABILIZE_MS,
                           (int32_t)APP_DARK_CALIBRATION_SAMPLES,
                           (int32_t)APP_DRDY_TIMEOUT_MS);
-    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt), true);
+    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt));
 
     app_build_meta_packet(&pkt,
                           SAMPLE_FLAG_PARAM_FRAME,
                           APP_META_SUBTYPE_PARAMS_ADC,
                           (int32_t)APP_FILTER_ALPHA_SHIFT,
-                          (int32_t)APP_USB_QUEUE_DEPTH,
-                          (int32_t)(((uint32_t)APP_DAC_BIAS_CH2 << 16) | (uint32_t)APP_DAC_BIAS_CH1),
+                          (int32_t)ADC_DEVICE_COUNT,
+                          (int32_t)ADC_CHANNELS_PER_DEVICE,
                           (int32_t)descriptor.ads1220_default_config);
-    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt), true);
+    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt));
 
     diag_get_snapshot(&diag_snapshot);
     app_build_meta_packet(&pkt,
@@ -672,28 +417,19 @@ static void app_send_baseline_metadata(uint8_t send_info, uint8_t send_params)
                           (int32_t)diag_snapshot.total_faults,
                           (int32_t)(((uint32_t)diag_snapshot.last_recovery_action << 16) |
                                     (uint32_t)diag_snapshot.last_recovery_result));
-    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt), true);
+    app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt));
   }
 }
 
-/* 函数说明：
- *   处理 CDC 接收回调置位的最小命令。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   把异步命令请求收口到主循环里执行，避免在 USB 回调上下文里直接入队数据。
- */
 static void app_process_pending_commands(void)
 {
   uint32_t primask;
   uint8_t command_flags;
 
-  primask = __get_PRIMASK();  // 先保存当前中断状态，再清空命令标志以避免重复处理，最后根据之前的中断状态决定是否恢复中断。
-  __disable_irq();            // 进入临界区保护命令标志，避免与 USB 中断回调冲突
+  primask = __get_PRIMASK();
+  __disable_irq();
   command_flags = g_app.command_flags;
-  g_app.command_flags = APP_COMMAND_FLAG_NONE;  // 清空命令标志，准备接受下一轮命令请求
+  g_app.command_flags = APP_COMMAND_FLAG_NONE;
   if (primask == 0U)
   {
     __enable_irq();
@@ -708,87 +444,15 @@ static void app_process_pending_commands(void)
                              (uint8_t)(command_flags & APP_COMMAND_FLAG_PARAMS));
 }
 
-/* 函数说明：
- *   周期性上报故障状态帧。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   在故障态下按固定周期生成状态帧，便于上位机定位问题。
- */
-static void app_handle_fault_reporting(void)
-{
-  sample_packet_t pkt;
-
-  if (!app_has_elapsed(g_app.last_fault_report_ms, APP_FAULT_REPORT_INTERVAL_MS))
-  {
-    return;
-  }
-
-  g_app.last_fault_report_ms = HAL_GetTick();
-  app_build_fault_packet(&pkt, (uint16_t)(g_app.fault_flags | SAMPLE_FLAG_FAULT_STATE | SAMPLE_FLAG_FAULT_REPORT));
-  app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt), true);
-}
-
-/* 函数说明：
- *   初始化应用层上下文。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   初始化状态机上下文、USB 发送队列和 ADS1220 驱动。
- */
-void app_init(void)
-{
-  memset(&g_app, 0, sizeof(g_app));
-  diag_init();                    // 捕获本次启动的复位原因并清空诊断计数
-  fault_policy_init();            // 清空恢复策略的连续失败状态
-  frame_builder_init(&g_app.frame_builder, FRAME_TYPE_PARTIAL_REAL);
-  app_enable_cycle_counter();   // 启用 DWT 周期计数器以支持微秒级时间戳
-  usb_stream_init();            // 初始化 USB 发送队列
-  adc_protocol_init(&hspi1);    // 初始化 ADS1220 驱动，传入 SPI 句柄以供后续通信
-  g_app.command_flags = (uint8_t)(APP_COMMAND_FLAG_INFO | APP_COMMAND_FLAG_PARAMS);
-  app_set_state(APP_STATE_INIT);// 设置初始状态，等待主循环调度
-}
-
-/* 函数说明：
- *   处理 INIT 状态。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   完成 ADC 复位、默认配置写入和前端偏置启动。
- */
 static void app_handle_init_state(void)
 {
-  adc_protocol_status_t status;
-
   app_stop_timer();
-  g_app.continuous_started = 0U;
-  g_app.latest_sample_valid = 0U;
-  app_clear_pending_sampling_events();
-  HAL_GPIO_WritePin(ADC_CS_GPIO_Port, ADC_CS_Pin, GPIO_PIN_SET);
-
-  status = adc_protocol_reset();
-  g_app.last_adc_status = (uint8_t)status;
-  if (status != ADC_PROTOCOL_OK)
-  {
-    app_schedule_recovery(app_fault_code_from_adc_status(status),
-                          (uint16_t)(app_flags_from_adc_status(status) | SAMPLE_FLAG_COMM_CHECK_FAILED));
-    return;
-  }
-
-  status = adc_protocol_configure_default();
-  g_app.last_adc_status = (uint8_t)status;
-  if (status != ADC_PROTOCOL_OK)
-  {
-    app_schedule_recovery(app_fault_code_from_adc_status(status),
-                          (uint16_t)(app_flags_from_adc_status(status) | SAMPLE_FLAG_COMM_CHECK_FAILED));
-    return;
-  }
+  app_clear_pending_events();
+  memset(g_app.pixels, 0, sizeof(g_app.pixels));
+  adc_bus_reset_all();
+  adc_bus_start_all_pulse();
+  ads1220_device_table_init();
+  ads1220_scheduler_start(&g_app.scheduler);
 
   if (!app_frontend_bias_start_default())
   {
@@ -800,250 +464,96 @@ static void app_handle_init_state(void)
   app_set_state(APP_STATE_BIAS_STABILIZE);
 }
 
-/* 函数说明：
- *   处理偏置稳定状态。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   等待模拟前端稳定后进入通信自检。
- */
 static void app_handle_bias_stabilize_state(void)
 {
-  if (app_has_elapsed(g_app.state_enter_ms, APP_BIAS_STABILIZE_MS))
-  {
-    app_set_state(APP_STATE_COMM_CHECK);
-  }
-}
-
-/* 函数说明：
- *   处理通信自检状态。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   发起一次自检采样，后续通过统一采样链路完成回读校验。
- */
-static void app_handle_comm_check_state(void)
-{
-  if (app_ensure_continuous_started(APP_PIPELINE_COMM_CHECK))
-  {
-    app_enter_wait_drdy();
-  }
-}
-
-/* 函数说明：
- *   处理暗态校准准备状态。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   清空校准上下文并启动 TIM6 输出节拍，校准样本仍由 DRDY 驱动。
- */
-static void app_handle_dark_calibrate_state(void)
-{
-  if (!app_ensure_continuous_started(APP_PIPELINE_CALIBRATION))
+  if (!app_has_elapsed(g_app.state_enter_ms, APP_BIAS_STABILIZE_MS))
   {
     return;
   }
 
-  g_app.pipeline_mode = APP_PIPELINE_CALIBRATION;
-  g_app.calibration_accumulator = 0;
-  g_app.calibration_count = 0U;
-  g_app.filter_valid = 0U;
-  g_app.baseline_code = 0;
-  g_app.corrected_code = 0;
-  g_app.frame_sample_count = 0U;
-  g_app.run_drdy_decimator = 0U;
-  g_app.latest_sample_valid = 0U;
-  g_app.fault_flags = 0U;
-  app_clear_pending_sampling_events();
+  app_clear_pending_events();
   app_start_timer();
-  app_enter_wait_drdy();
+  app_set_state(APP_STATE_WAIT_DRDY);
 }
 
-/* 函数说明：
- *   处理等待触发状态。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   等待 TIM6 输出许可。这里绝不启动 ADC 转换；若暂时不能输出，
- *   立即回到 WAIT_DRDY，保证 continuous ADC 的原始样本链路持续前进。
- */
-static void app_handle_wait_trigger_state(void)
+static void app_handle_scheduler_state(void)
 {
-  if (app_try_schedule_output_flush())
-  {
-    return;
-  }
-
-  app_enter_wait_drdy();
-}
-
-/* 函数说明：
- *   处理等待 DRDY 状态。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   等待 continuous ADC 的下一个 DRDY。若已有降采样后的运行样本且
- *   TIM6 输出许可到达，可先进入 USB_FLUSH；否则 DRDY 到来后读最新样本。
- */
-static void app_handle_wait_drdy_state(void)
-{
-  uint32_t drdy_count;
-
-  if (app_try_schedule_output_flush())
-  {
-    return;
-  }
-
-  drdy_count = app_take_pending_drdy_count();
-  if (drdy_count != 0U)
-  {
-    g_app.drdy_events_for_sample = drdy_count;
-    app_set_state(APP_STATE_READ_SAMPLE);
-  }
-  else if ((int32_t)(HAL_GetTick() - g_app.drdy_deadline_ms) >= 0)
-  {
-    app_schedule_recovery(DIAG_FAULT_DRDY_TIMEOUT,
-                          (uint16_t)(SAMPLE_FLAG_DRDY_TIMEOUT |
-                                     ((g_app.pipeline_mode == APP_PIPELINE_COMM_CHECK) ? SAMPLE_FLAG_COMM_CHECK_FAILED : 0U)));
-  }
-}
-
-/* 函数说明：
- *   处理样本读取状态。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   在主循环里完成 SPI 读样，并把协议层状态码回传到应用上下文。
- */
-static void app_handle_read_sample_state(void)
-{
+  bool selected_drdy_pending = false;
   adc_protocol_status_t status;
+  ads1220_scheduler_state_t error_state;
+  diag_fault_code_t fault_code;
+  uint16_t fault_flags;
 
-  status = adc_protocol_read_sample(&g_app.raw_code);
-  g_app.last_adc_status = (uint8_t)status;
-  if (status != ADC_PROTOCOL_OK)
+  if (g_app.scheduler.state == ADS1220_SCHED_WAIT_DRDY)
   {
-    app_schedule_recovery(app_fault_code_from_adc_status(status),
-                          (uint16_t)(app_flags_from_adc_status(status) |
-                                     ((g_app.pipeline_mode == APP_PIPELINE_COMM_CHECK) ? SAMPLE_FLAG_COMM_CHECK_FAILED : 0U)));
+    selected_drdy_pending = app_take_selected_drdy_event();
+  }
+
+  ads1220_scheduler_service(&g_app.scheduler, selected_drdy_pending);
+  if (ads1220_scheduler_consume_drdy_rearm_request(&g_app.scheduler))
+  {
+    app_clear_pending_drdy_events();
+  }
+
+  g_app.last_adc_status = (uint8_t)g_app.scheduler.last_status;
+
+  if (ads1220_scheduler_has_error(&g_app.scheduler))
+  {
+    status = g_app.scheduler.last_status;
+    error_state = ads1220_scheduler_error_state(&g_app.scheduler);
+    fault_code = app_fault_code_from_adc_status(status, error_state);
+    fault_flags = app_flags_from_adc_status(status, error_state);
+    app_schedule_recovery(fault_code, fault_flags);
     return;
   }
 
-  app_set_state(APP_STATE_PROCESS_SAMPLE);
-}
-
-/* 函数说明：
- *   处理样本加工状态。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   按当前流水线模式选择自检、校准或正常运行分支。
- */
-static void app_handle_process_sample_state(void)
-{
-  adc_protocol_status_t status;
-
-  (void)app_filter_raw_code(g_app.raw_code);
-
-  if (g_app.pipeline_mode == APP_PIPELINE_COMM_CHECK)
+  if (ads1220_scheduler_frame_ready(&g_app.scheduler) && app_consume_output_tick())
   {
-    status = adc_protocol_link_check(g_app.raw_code);
-    g_app.last_adc_status = (uint8_t)status;
-    if (status != ADC_PROTOCOL_OK)
-    {
-      app_schedule_recovery(app_fault_code_from_adc_status(status),
-                            (uint16_t)(app_flags_from_adc_status(status) | SAMPLE_FLAG_COMM_CHECK_FAILED));
-    }
-    else
-    {
-      app_set_state(APP_STATE_DARK_CALIBRATE);
-    }
-  }
-  else if (g_app.pipeline_mode == APP_PIPELINE_CALIBRATION)
-  {
-    g_app.calibration_accumulator += g_app.filtered_code;
-    g_app.calibration_count++;
-
-    if (g_app.calibration_count >= APP_DARK_CALIBRATION_SAMPLES)
-    {
-      g_app.baseline_code = (int32_t)(g_app.calibration_accumulator / (int64_t)APP_DARK_CALIBRATION_SAMPLES);
-      g_app.filter_valid = 0U;
-      g_app.pipeline_mode = APP_PIPELINE_RUN;
-      g_app.run_drdy_decimator = 0U;
-      g_app.latest_sample_valid = 0U;
-      app_clear_pending_output_ticks();
-    }
-
-    app_enter_wait_drdy();
-  }
-  else
-  {
-    g_app.corrected_code = g_app.filtered_code - g_app.baseline_code;
-    /* 显式降采样策略：ADS1220 连续 2 kSPS，每累计 2 个 DRDY 事件，
-     * 将“最近一次已读样本”标记为 1 kHz 输出候选。若主循环偶尔延迟，
-     * DRDY 计数会保留事件数量，但 ADS1220 数据寄存器只能读到最新样本。 */
-    g_app.run_drdy_decimator += g_app.drdy_events_for_sample;
-    if (g_app.run_drdy_decimator >= APP_ADC_SAMPLES_PER_OUTPUT)
-    {
-      g_app.run_drdy_decimator %= APP_ADC_SAMPLES_PER_OUTPUT;
-      g_app.latest_sample_valid = 1U;
-    }
-
-    app_set_state(APP_STATE_WAIT_TRIGGER);
+    app_set_state(APP_STATE_USB_FLUSH);
   }
 }
 
-/* 函数说明：
- *   处理 USB 刷新状态。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   消费一个 1 kHz 输出样本。V1.0 图像帧仍按 100 Hz 发布：
- *   每 10 个输出样本构造 1 个 10x10 frame_packet_t。
- */
 static void app_handle_usb_flush_state(void)
 {
   frame_packet_t frame;
 
-  /* ADS1220 以 2 kSPS continuous mode 运行，本函数只处理经 DRDY 计数
-   * 降采样并经 TIM6 输出许可放行后的 1 kHz 运行样本。 */
-  g_app.frame_sample_count++;
-  if (g_app.frame_sample_count < APP_SAMPLES_PER_LOGICAL_FRAME)
+  frame_builder_build_pixels(&g_app.frame_builder,
+                             &frame,
+                             g_app.frame_sequence++,
+                             app_get_timestamp_us(),
+                             g_app.pixels);
+  app_record_usb_enqueue(usb_stream_enqueue_frame(&frame));
+  ads1220_scheduler_clear_frame_ready(&g_app.scheduler);
+  app_set_state(APP_STATE_WAIT_DRDY);
+}
+
+static void app_handle_fault_state(void)
+{
+  sample_packet_t pkt;
+  diag_snapshot_t diag_snapshot;
+  fault_policy_snapshot_t policy_snapshot;
+
+  if (!app_has_elapsed(g_app.last_fault_report_ms, APP_FAULT_REPORT_INTERVAL_MS))
   {
-    app_enter_wait_drdy();
     return;
   }
 
-  g_app.frame_sample_count = 0U;
-  frame_builder_build(&g_app.frame_builder,
-                      &frame,
-                      g_app.frame_sequence++,
-                      app_get_timestamp_us(),
-                      g_app.corrected_code);
-  app_record_usb_enqueue(usb_stream_enqueue_frame(&frame), false);
-  app_enter_wait_drdy();
-}
+  g_app.last_fault_report_ms = HAL_GetTick();
+  diag_get_snapshot(&diag_snapshot);
+  fault_policy_get_snapshot(&policy_snapshot);
 
-static void app_finish_recovery(diag_recovery_action_t action, bool success)
-{
-  diag_record_recovery(action, (success != false) ? DIAG_RECOVERY_RESULT_SUCCESS : DIAG_RECOVERY_RESULT_FAILED);
-  fault_policy_record_recovery_result(action, success);
+  app_prepare_packet(&pkt,
+                     (uint16_t)(g_app.fault_flags | SAMPLE_FLAG_FAULT_STATE | SAMPLE_FLAG_FAULT_REPORT),
+                     (uint16_t)(((uint16_t)g_app.last_usb_status << 8) | diag_snapshot.last_protocol_status),
+                     g_app.meta_sequence++);
+  pkt.raw_code = (int32_t)diag_snapshot.last_fault;
+  pkt.filtered_code = (int32_t)diag_get_fault_count(diag_snapshot.last_fault);
+  pkt.baseline_code = (int32_t)(((uint32_t)diag_snapshot.reset_reason << 16) |
+                                ((uint32_t)diag_snapshot.last_recovery_action << 8) |
+                                (uint32_t)diag_snapshot.last_recovery_result);
+  pkt.corrected_code = (int32_t)(((policy_snapshot.consecutive_failures & 0xFFFFUL) << 16) |
+                                 (policy_snapshot.recovery_attempts & 0xFFFFUL));
+  app_record_usb_enqueue(usb_stream_enqueue_aux(&pkt));
 }
 
 static void app_handle_recover_state(void)
@@ -1053,54 +563,40 @@ static void app_handle_recover_state(void)
 
   if (action == DIAG_RECOVERY_ACTION_SPI_RETRY)
   {
-    if (!app_ensure_continuous_started(g_app.pipeline_mode))
-    {
-      app_finish_recovery(action, false);
-      return;
-    }
-
+    ads1220_scheduler_retry_current(&g_app.scheduler);
+    app_clear_pending_events();
+    app_start_timer();
     g_app.fault_flags = 0U;
     g_app.recovery_fault_flags = 0U;
     g_app.recovery_action = DIAG_RECOVERY_ACTION_NONE;
     app_finish_recovery(action, true);
-    app_enter_wait_drdy();
+    app_set_state(APP_STATE_WAIT_DRDY);
     return;
   }
 
   if (action == DIAG_RECOVERY_ACTION_ADC_RECONFIGURE)
   {
-    status = adc_protocol_reset();
-    if (status == ADC_PROTOCOL_OK)
-    {
-      status = adc_protocol_configure_default();
-    }
-    if (status == ADC_PROTOCOL_OK)
-    {
-      status = adc_protocol_link_check(g_app.raw_code);
-    }
-
+    status = app_reconfigure_current_device();
     g_app.last_adc_status = (uint8_t)status;
     if (status != ADC_PROTOCOL_OK)
     {
       app_finish_recovery(action, false);
-      app_schedule_recovery(app_fault_code_from_adc_status(status),
-                            (uint16_t)(app_flags_from_adc_status(status) |
+      app_schedule_recovery(app_fault_code_from_adc_status(status, ADS1220_SCHED_ENSURE_CONFIG),
+                            (uint16_t)(app_flags_from_adc_status(status, ADS1220_SCHED_ENSURE_CONFIG) |
                                        g_app.recovery_fault_flags |
                                        SAMPLE_FLAG_RECOVERY_ACTIVE |
                                        SAMPLE_FLAG_RECOVERY_FAILED));
       return;
     }
 
+    ads1220_scheduler_retry_current(&g_app.scheduler);
+    app_clear_pending_events();
+    app_start_timer();
     g_app.fault_flags = 0U;
     g_app.recovery_fault_flags = 0U;
     g_app.recovery_action = DIAG_RECOVERY_ACTION_NONE;
-    g_app.pipeline_mode = APP_PIPELINE_COMM_CHECK;
-    g_app.filter_valid = 0U;
-    g_app.continuous_started = 0U;
-    g_app.latest_sample_valid = 0U;
-    app_clear_pending_sampling_events();
     app_finish_recovery(action, true);
-    app_set_state(APP_STATE_BIAS_STABILIZE);
+    app_set_state(APP_STATE_WAIT_DRDY);
     return;
   }
 
@@ -1108,32 +604,26 @@ static void app_handle_recover_state(void)
   app_enter_fault_hold((uint16_t)(g_app.fault_flags | SAMPLE_FLAG_RECOVERY_FAILED));
 }
 
-/* 函数说明：
- *   处理故障状态。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   周期性发送故障状态帧。
- */
-static void app_handle_fault_state(void)
+void app_init(void)
 {
-  app_handle_fault_reporting();
+  memset(&g_app, 0, sizeof(g_app));
+  diag_init();
+  fault_policy_init();
+  frame_builder_init(&g_app.frame_builder, FRAME_TYPE_FULL_REAL);
+  app_enable_cycle_counter();
+  usb_stream_init();
+  adc_bus_init(&g_app.adc_bus, &hspi1);
+  adc_protocol_init(&g_app.adc_bus);
+  ads1220_device_table_init();
+  ads1220_scheduler_init(&g_app.scheduler, g_app.pixels);
+  g_app.pending_drdy_device_id = 0xFFU;
+  g_app.pending_drdy_channel_id = 0xFFU;
+  g_app.command_flags = (uint8_t)(APP_COMMAND_FLAG_INFO | APP_COMMAND_FLAG_PARAMS);
+  app_set_state(APP_STATE_INIT);
 }
 
-/* 函数说明：
- *   应用层主调度函数。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   推动状态机完成采样、处理和发送流程。
- */
 void app_run_once(void)
 {
-  /* 主循环每次都顺带推动 USB 发送，避免队列长期堆积。 */
   usb_stream_service();
   app_process_pending_commands();
 
@@ -1147,59 +637,35 @@ void app_run_once(void)
       app_handle_bias_stabilize_state();
       break;
 
-    case APP_STATE_COMM_CHECK:
-      app_handle_comm_check_state();
-      break;
-
-    case APP_STATE_DARK_CALIBRATE:
-      app_handle_dark_calibrate_state();
-      break;
-
-    case APP_STATE_WAIT_TRIGGER:
-      app_handle_wait_trigger_state();
-      break;
-
     case APP_STATE_WAIT_DRDY:
-      app_handle_wait_drdy_state();
-      break;
-
+    case APP_STATE_WAIT_TRIGGER:
     case APP_STATE_READ_SAMPLE:
-      app_handle_read_sample_state();
-      break;
-
     case APP_STATE_PROCESS_SAMPLE:
-      app_handle_process_sample_state();
+      app_handle_scheduler_state();
       break;
 
     case APP_STATE_USB_FLUSH:
       app_handle_usb_flush_state();
       break;
 
-    case APP_STATE_RECOVER:
-      app_handle_recover_state();
-      break;
-
     case APP_STATE_FAULT:
       app_handle_fault_state();
       break;
 
+    case APP_STATE_RECOVER:
+      app_handle_recover_state();
+      break;
+
+    case APP_STATE_COMM_CHECK:
+    case APP_STATE_DARK_CALIBRATE:
     default:
-      app_enter_fault_hold(SAMPLE_FLAG_FAULT_STATE);
+      app_set_state(APP_STATE_WAIT_DRDY);
       break;
   }
 
   usb_stream_service();
 }
 
-/* 函数说明：
- *   TIM6 中断事件入口。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   仅累计 1 kHz 输出许可。TIM6 不启动 ADC 转换。
- */
 void app_on_sample_tick_isr(void)
 {
   if (g_app.pending_output_ticks != UINT32_MAX)
@@ -1208,38 +674,38 @@ void app_on_sample_tick_isr(void)
   }
 }
 
-/* 函数说明：
- *   DRDY 外部中断事件入口。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   仅累计数据就绪事件。SPI 读样始终在主循环中执行。
- */
 void app_on_drdy_isr(void)
 {
+  uint8_t device_id;
+  uint8_t channel_id;
+
+  if ((g_app.state != APP_STATE_WAIT_DRDY) || (g_app.scheduler.state != ADS1220_SCHED_WAIT_DRDY))
+  {
+    return;
+  }
+
+  device_id = ads1220_scheduler_current_device_id(&g_app.scheduler);
+  channel_id = ads1220_scheduler_current_channel_id(&g_app.scheduler);
+  if ((g_app.pending_drdy_count != 0U) &&
+      ((g_app.pending_drdy_device_id != device_id) ||
+       (g_app.pending_drdy_channel_id != channel_id)))
+  {
+    g_app.pending_drdy_count = 0U;
+  }
+
+  g_app.pending_drdy_device_id = device_id;
+  g_app.pending_drdy_channel_id = channel_id;
   if (g_app.pending_drdy_count != UINT32_MAX)
   {
     g_app.pending_drdy_count++;
   }
 }
 
-/* 函数说明：
- *   处理上位机发来的最小命令字节。
- * 输入：
- *   data: 接收缓冲区。
- *   length: 缓冲区长度。
- * 输出：
- *   无。
- * 作用：
- *   识别 I/P/B 查询命令，主循环会据此补发版本和参数元信息帧。
- */
 void app_on_usb_command_rx(const uint8_t *data, uint32_t length)
 {
   uint32_t i;
 
-  if ((data == NULL) || (length == 0U))
+  if ((data == 0) || (length == 0U))
   {
     return;
   }
@@ -1270,45 +736,18 @@ void app_on_usb_command_rx(const uint8_t *data, uint32_t length)
 }
 
 #ifdef UNIT_TEST
-/* 函数说明：
- *   获取当前应用状态机状态。
- * 输入：
- *   无。
- * 输出：
- *   返回当前 app_state_t 状态值。
- * 作用：
- *   仅在 UNIT_TEST 构建下提供只读观察口，便于主机测试断言状态迁移。
- */
 app_state_t app_test_get_state(void)
 {
   return g_app.state;
 }
 
-/* 函数说明：
- *   获取当前故障标志。
- * 输入：
- *   无。
- * 输出：
- *   返回当前 fault_flags 位图。
- * 作用：
- *   仅在 UNIT_TEST 构建下暴露故障状态，避免测试直接访问静态上下文。
- */
 uint16_t app_test_get_fault_flags(void)
 {
   return g_app.fault_flags;
 }
 
-/* 函数说明：
- *   获取当前暗态基线码值。
- * 输入：
- *   无。
- * 输出：
- *   返回当前 baseline_code。
- * 作用：
- *   仅在 UNIT_TEST 构建下验证校准结果，不提供任何写入口。
- */
 int32_t app_test_get_baseline_code(void)
 {
-  return g_app.baseline_code;
+  return 0;
 }
 #endif

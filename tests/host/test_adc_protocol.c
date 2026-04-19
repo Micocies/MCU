@@ -1,5 +1,6 @@
 #include "test_config.h"
 
+#include "adc_bus.h"
 #include "adc_protocol.h"
 #include "app_config.h"
 #include "fake_hal.h"
@@ -60,9 +61,11 @@ static void test_code_to_voltage_boundaries(void)
 static void test_spi_error_mapping(void)
 {
   SPI_HandleTypeDef spi;
+  adc_bus_t bus;
 
   fake_hal_reset();
-  adc_protocol_init(&spi);
+  adc_bus_init(&bus, &spi);
+  adc_protocol_init(&bus);
 
   fake_hal_set_spi_status(HAL_TIMEOUT);
   TEST_ASSERT_EQ_INT(ADC_PROTOCOL_ERR_TIMEOUT, adc_protocol_send_command(ADS1220_CMD_RESET));
@@ -83,11 +86,13 @@ static void test_spi_error_mapping(void)
 static void test_configure_writes_expected_sequence(void)
 {
   SPI_HandleTypeDef spi;
+  adc_bus_t bus;
   ads1220_config_t config = {{0x11U, 0x22U, 0x33U, 0x44U}};
   const uint8_t *tx;
 
   fake_hal_reset();
-  adc_protocol_init(&spi);
+  adc_bus_init(&bus, &spi);
+  adc_protocol_init(&bus);
   fake_hal_set_spi_status(HAL_OK);
 
   TEST_ASSERT_EQ_INT(ADC_PROTOCOL_OK, adc_protocol_configure(&config));
@@ -104,13 +109,21 @@ static void test_configure_writes_expected_sequence(void)
 static void test_link_check_records_mismatch_retries(void)
 {
   SPI_HandleTypeDef spi;
+  adc_bus_t bus;
+  ads1220_config_t config = {{
+    ADS1220_DEFAULT_CONFIG0,
+    ADS1220_DEFAULT_CONFIG1,
+    ADS1220_DEFAULT_CONFIG2,
+    ADS1220_DEFAULT_CONFIG3
+  }};
   adc_protocol_link_stats_t stats;
 
   fake_hal_reset();
-  adc_protocol_init(&spi);
+  adc_bus_init(&bus, &spi);
+  adc_protocol_init(&bus);
   fake_hal_set_config_mismatch(1U);
 
-  TEST_ASSERT_EQ_INT(ADC_PROTOCOL_ERR_CONFIG_MISMATCH, adc_protocol_link_check(0));
+  TEST_ASSERT_EQ_INT(ADC_PROTOCOL_ERR_CONFIG_MISMATCH, adc_protocol_link_check(&config));
   adc_protocol_get_link_stats(&stats);
 
   TEST_ASSERT_EQ_U32(1U, stats.total_checks);

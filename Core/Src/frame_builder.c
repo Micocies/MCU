@@ -141,3 +141,45 @@ void frame_builder_build(frame_builder_t *builder,
 
   frame_protocol_finalize(frame);
 }
+
+void frame_builder_build_pixels(frame_builder_t *builder,
+                                frame_packet_t *frame,
+                                uint32_t frame_id,
+                                uint32_t timestamp_us,
+                                const int32_t pixels[PIXEL_COUNT])
+{
+  frame_type_t mode = FRAME_TYPE_PARTIAL_REAL;
+
+  if (frame == 0)
+  {
+    return;
+  }
+
+  if (builder != 0)
+  {
+    mode = builder->mode;
+  }
+
+  memset(frame, 0, sizeof(*frame));
+  frame_protocol_prepare_header(&frame->header, mode, frame_id, timestamp_us);
+
+  if (mode == FRAME_TYPE_TEST)
+  {
+    frame_builder_fill_test_pattern(frame, frame_id);
+  }
+  else if ((mode == FRAME_TYPE_PLACEHOLDER) || (pixels == 0))
+  {
+    memset(&frame->pixels[0], 0, sizeof(frame->pixels));
+  }
+  else if (mode == FRAME_TYPE_PARTIAL_REAL)
+  {
+    frame_builder_fill_test_pattern(frame, frame_id);
+    frame->pixels[PROJECT_ACTIVE_PIXEL_ID] = pixels[PROJECT_ACTIVE_PIXEL_ID];
+  }
+  else
+  {
+    memcpy(&frame->pixels[0], pixels, sizeof(frame->pixels));
+  }
+
+  frame_protocol_finalize(frame);
+}

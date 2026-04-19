@@ -52,6 +52,9 @@ extern GPIO_TypeDef fake_gpiob;
 #define GPIO_PIN_0 0x0001U
 #define GPIO_PIN_1 0x0002U
 #define GPIO_PIN_2 0x0004U
+#define GPIO_PIN_3 0x0008U
+#define GPIO_PIN_8 0x0100U
+#define GPIO_PIN_9 0x0200U
 #define GPIO_PIN_15 0x8000U
 
 #define DAC_CHANNEL_1 1U
@@ -84,6 +87,7 @@ uint16_t fake_hal_get_last_spi_size(void);
 uint32_t HAL_GetTick(void);
 void HAL_Delay(uint32_t delay_ms);
 void HAL_GPIO_WritePin(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin, GPIO_PinState PinState);
+GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin);
 HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *hspi,
                                            uint8_t *pTxData,
                                            uint8_t *pRxData,

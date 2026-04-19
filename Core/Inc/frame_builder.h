@@ -22,6 +22,11 @@ void frame_builder_build(frame_builder_t *builder,
                          uint32_t frame_id,
                          uint32_t timestamp_us,
                          int32_t real_sample);
+void frame_builder_build_pixels(frame_builder_t *builder,
+                                frame_packet_t *frame,
+                                uint32_t frame_id,
+                                uint32_t timestamp_us,
+                                const int32_t pixels[PIXEL_COUNT]);
 
 #ifdef __cplusplus
 }

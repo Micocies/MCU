@@ -76,3 +76,17 @@
 - 先沿用当前 `PB0` 的上升沿 DRDY 设定；如果真实器件为低有效 DRDY，需要把 EXTI 改为下降沿并同步更新协议配置。
 - 第一版不做 DMA、不做自动重试、不做运行时基线慢跟踪、不输出物理单位浮点值；换算默认采用整数 1:1 线性系数。
 - 工程继续以 IAR 工程为主，新增源码需同步加入 `EWARM/STM32G431CBT_MCU.ewp`。
+# V1.1 Addendum
+
+本次版本把工程从 V1.0 单 ADS1220 主链路推进到固定 25 设备轮询版。
+
+- 固定拓扑：5 块子板 x 每板 5 颗 ADS1220 x 每颗 4 路输入，共 100 pixels。
+- 固定映射：`pixel_id = device_id * 4 + channel_id`。
+- 新增分层：`board_topology`、`adc_bus`、`ads1220_device`、`ads1220_scheduler`。
+- `adc_bus` 收口所有 ADS1220 GPIO；`ADC_CS_GATE` assert 为拉低，deassert 为拉高。
+- scheduler 单活动设备轮询，不使用 DMA，不做多 DRDY 并发中断。
+- DRDY 事件按当前 `device_id/channel_id` 绑定，切换设备后清除旧 EXTI/pending 事件。
+- scheduler 错误重新接回 `fault_policy/diag/RECOVER`：DRDY timeout、SPI error、config mismatch 会恢复，连续失败进入 FAULT。
+- USB 主图像帧仍为 420 字节；V1.1 正常输出使用 `FRAME_TYPE_FULL_REAL`。
+- CDC OUT 命令 `I/P/B` 接入 `app_on_usb_command_rx()`。
+- FAULT 辅助帧按 `APP_FAULT_REPORT_INTERVAL_MS` 节流。

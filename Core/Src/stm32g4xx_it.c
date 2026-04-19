@@ -1,4 +1,4 @@
-﻿/* USER CODE BEGIN Header */
+/* USER CODE BEGIN Header */
 /**
   ******************************************************************************
   * @file    stm32g4xx_it.c
@@ -19,11 +19,10 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "app.h"
 #include "stm32g4xx_it.h"
-
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "app.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -52,19 +51,16 @@
 
 /* External variables --------------------------------------------------------*/
 extern PCD_HandleTypeDef hpcd_USB_FS;
-extern TIM_HandleTypeDef htim6;
 /* USER CODE BEGIN EV */
+extern TIM_HandleTypeDef htim6;
 /* USER CODE END EV */
 
-/* 函数说明：
- *   Non-maskable 中断入口。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   当前实现直接停留在死循环，便于调试异常现场。
- */
+/******************************************************************************/
+/*           Cortex-M4 Processor Interruption and Exception Handlers          */
+/******************************************************************************/
+/**
+  * @brief This function handles Non maskable interrupt.
+  */
 void NMI_Handler(void)
 {
   /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
@@ -76,15 +72,9 @@ void NMI_Handler(void)
   /* USER CODE END NonMaskableInt_IRQn 1 */
 }
 
-/* 函数说明：
- *   HardFault 中断入口。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   当前实现直接停留在死循环，便于调试异常现场。
- */
+/**
+  * @brief This function handles Hard fault interrupt.
+  */
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
@@ -96,15 +86,9 @@ void HardFault_Handler(void)
   }
 }
 
-/* 函数说明：
- *   MemManage 中断入口。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   当前实现直接停留在死循环，便于调试异常现场。
- */
+/**
+  * @brief This function handles Memory management fault.
+  */
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
@@ -116,15 +100,9 @@ void MemManage_Handler(void)
   }
 }
 
-/* 函数说明：
- *   BusFault 中断入口。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   当前实现直接停留在死循环，便于调试异常现场。
- */
+/**
+  * @brief This function handles Prefetch fault, memory access fault.
+  */
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
@@ -136,15 +114,9 @@ void BusFault_Handler(void)
   }
 }
 
-/* 函数说明：
- *   UsageFault 中断入口。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   当前实现直接停留在死循环，便于调试异常现场。
- */
+/**
+  * @brief This function handles Undefined instruction or illegal state.
+  */
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
@@ -156,15 +128,9 @@ void UsageFault_Handler(void)
   }
 }
 
-/* 函数说明：
- *   SVC 中断入口。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   当前未附加自定义逻辑，保留默认空实现。
- */
+/**
+  * @brief This function handles System service call via SWI instruction.
+  */
 void SVC_Handler(void)
 {
   /* USER CODE BEGIN SVCall_IRQn 0 */
@@ -173,15 +139,9 @@ void SVC_Handler(void)
   /* USER CODE END SVCall_IRQn 1 */
 }
 
-/* 函数说明：
- *   DebugMon 中断入口。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   当前未附加自定义逻辑，保留默认空实现。
- */
+/**
+  * @brief This function handles Debug monitor.
+  */
 void DebugMon_Handler(void)
 {
   /* USER CODE BEGIN DebugMonitor_IRQn 0 */
@@ -190,15 +150,9 @@ void DebugMon_Handler(void)
   /* USER CODE END DebugMonitor_IRQn 1 */
 }
 
-/* 函数说明：
- *   PendSV 中断入口。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   当前未附加自定义逻辑，保留默认空实现。
- */
+/**
+  * @brief This function handles Pendable request for system service.
+  */
 void PendSV_Handler(void)
 {
   /* USER CODE BEGIN PendSV_IRQn 0 */
@@ -207,15 +161,9 @@ void PendSV_Handler(void)
   /* USER CODE END PendSV_IRQn 1 */
 }
 
-/* 函数说明：
- *   SysTick 中断入口。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   维护 HAL 的系统节拍。
- */
+/**
+  * @brief This function handles System tick timer.
+  */
 void SysTick_Handler(void)
 {
   /* USER CODE BEGIN SysTick_IRQn 0 */
@@ -225,62 +173,16 @@ void SysTick_Handler(void)
   /* USER CODE END SysTick_IRQn 1 */
 }
 
-/* 函数说明：
- *   处理 ADS1220 的 DRDY 外部中断。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   只清中断并上报数据就绪事件，不在 ISR 中做 SPI 阻塞读。
- */
-void EXTI0_IRQHandler(void)
-{
-  /* USER CODE BEGIN EXTI0_IRQn 0 */
-  /* USER CODE END EXTI0_IRQn 0 */
-  if (__HAL_GPIO_EXTI_GET_IT(ADC_DRDY_Pin) != RESET)
-  {
-    __HAL_GPIO_EXTI_CLEAR_IT(ADC_DRDY_Pin);
-    app_on_drdy_isr();
-  }
-  /* USER CODE BEGIN EXTI0_IRQn 1 */
-  /* USER CODE END EXTI0_IRQn 1 */
-}
+/******************************************************************************/
+/* STM32G4xx Peripheral Interrupt Handlers                                    */
+/* Add here the Interrupt Handlers for the used peripherals.                  */
+/* For the available peripheral interrupt handler names,                      */
+/* please refer to the startup file (startup_stm32g4xx.s).                    */
+/******************************************************************************/
 
-/* 函数说明：
- *   处理 TIM6 更新中断。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   只生成 1 kHz 输出许可事件，不在中断里启动 ADC、读 SPI 或发 USB。
- */
-void TIM6_DAC_IRQHandler(void)
-{
-  /* USER CODE BEGIN TIM6_DAC_IRQn 0 */
-  /* USER CODE END TIM6_DAC_IRQn 0 */
-  if (__HAL_TIM_GET_FLAG(&htim6, TIM_FLAG_UPDATE) != RESET)
-  {
-    if (__HAL_TIM_GET_IT_SOURCE(&htim6, TIM_IT_UPDATE) != RESET)
-    {
-      __HAL_TIM_CLEAR_IT(&htim6, TIM_IT_UPDATE);
-      app_on_sample_tick_isr();
-    }
-  }
-  /* USER CODE BEGIN TIM6_DAC_IRQn 1 */
-  /* USER CODE END TIM6_DAC_IRQn 1 */
-}
-
-/* 函数说明：
- *   处理 USB 低优先级中断。
- * 输入：
- *   无。
- * 输出：
- *   无。
- * 作用：
- *   将 USB 中断转发给 Cube USB 设备栈处理。
- */
+/**
+  * @brief This function handles USB low priority interrupt remap.
+  */
 void USB_LP_IRQHandler(void)
 {
   /* USER CODE BEGIN USB_LP_IRQn 0 */
@@ -291,5 +193,29 @@ void USB_LP_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
-/* USER CODE END 1 */
+void EXTI0_IRQHandler(void)
+{
+  HAL_GPIO_EXTI_IRQHandler(ADC_DRDY_MUX_Pin);
+}
 
+void TIM6_DAC_IRQHandler(void)
+{
+  HAL_TIM_IRQHandler(&htim6);
+}
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  if (GPIO_Pin == ADC_DRDY_MUX_Pin)
+  {
+    app_on_drdy_isr();
+  }
+}
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  if ((htim != 0) && (htim->Instance == TIM6))
+  {
+    app_on_sample_tick_isr();
+  }
+}
+/* USER CODE END 1 */

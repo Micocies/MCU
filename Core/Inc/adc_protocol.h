@@ -7,7 +7,8 @@ extern "C" {
 
 #include <stdbool.h>
 #include <stdint.h>
-#include "main.h"
+
+#include "adc_bus.h"
 
 /* ADS1220 只有 4 个配置寄存器，按地址顺序统一保存。 */
 typedef enum
@@ -76,7 +77,7 @@ typedef struct
 #define ADS1220_DEFAULT_CONFIG2          0x10U
 #define ADS1220_DEFAULT_CONFIG3          0x00U
 
-void adc_protocol_init(SPI_HandleTypeDef *hspi);
+void adc_protocol_init(adc_bus_t *bus);
 /* 一次性写入 4 个配置寄存器。 */
 adc_protocol_status_t adc_protocol_configure(const ads1220_config_t *config);
 /* 使用工程默认值配置 ADS1220。 */
@@ -87,7 +88,7 @@ adc_protocol_status_t adc_protocol_read_config(ads1220_config_t *config);
 adc_protocol_status_t adc_protocol_send_command(uint8_t command);
 adc_protocol_status_t adc_protocol_reset(void);
 adc_protocol_status_t adc_protocol_stop(void);
-adc_protocol_status_t adc_protocol_start_continuous(void);
+adc_protocol_status_t adc_protocol_start_continuous(const ads1220_config_t *expected_config);
 adc_protocol_status_t adc_protocol_stop_continuous(void);
 bool adc_protocol_is_continuous_config(const ads1220_config_t *config);
 adc_protocol_status_t adc_protocol_start_conversion(void);
@@ -98,7 +99,7 @@ int32_t adc_protocol_parse_raw24(const uint8_t data[ADS1220_DATA_BYTES]);
 /* 按 Vref 和 Gain 把 ADC 码值换算为输入差分电压。 */
 float adc_protocol_code_to_voltage(int32_t code, float vref, float gain);
 adc_protocol_status_t adc_protocol_read_sample(int32_t *raw_code);
-adc_protocol_status_t adc_protocol_link_check(int32_t raw_code);
+adc_protocol_status_t adc_protocol_link_check(const ads1220_config_t *expected_config);
 void adc_protocol_get_link_stats(adc_protocol_link_stats_t *stats);
 void adc_protocol_reset_link_stats(void);
 

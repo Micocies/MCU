@@ -1,10 +1,10 @@
-Start testing: Apr 18 16:09 中国标准时间
+Start testing: Apr 19 17:04 中国标准时间
 ----------------------------------------------------------
 1/1 Testing: host_tests
 1/1 Test: host_tests
 Command: "D:/code/MCU/STM32G431CBT_MCU/build/tests/Debug/host_tests.exe"
 Directory: D:/code/MCU/STM32G431CBT_MCU/build/tests
-"host_tests" start time: Apr 18 16:09 中国标准时间
+"host_tests" start time: Apr 19 17:04 中国标准时间
 Output:
 ----------------------------------------------------------
 [ RUN      ] adc_protocol
@@ -20,8 +20,8 @@ Output:
 Test time =   0.01 sec
 ----------------------------------------------------------
 Test Passed.
-"host_tests" end time: Apr 18 16:09 中国标准时间
+"host_tests" end time: Apr 19 17:04 中国标准时间
 "host_tests" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-End testing: Apr 18 16:09 中国标准时间
+End testing: Apr 19 17:04 中国标准时间

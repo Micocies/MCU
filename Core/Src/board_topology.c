@@ -1,17 +1,34 @@
 #include "board_topology.h"
 
-/* 函数说明：
- *   查询指定 pixel_id 对应的固定硬件拓扑路由。
- * 输入：
- *   pixel_id: 像素编号，范围为 0 到 PIXEL_COUNT-1。
- *   route: 输出路由信息指针。
- * 输出：
- *   true : 查询成功，route 已填充。
- *   false: 参数为空或 pixel_id 超出固定 100 pixels 范围。
- * 作用：
- *   将 V1.0 冻结的 row-major 像素编号映射到子板、ADS1220 和通道位置。
- */
-bool board_topology_get_route(uint16_t pixel_id, board_pixel_route_t *route)
+const ads1220_route_t g_ads1220_routes[ADC_DEVICE_COUNT] = {
+  {0U, 0U, 0U},  {1U, 0U, 1U},  {2U, 0U, 2U},  {3U, 0U, 3U},  {4U, 0U, 4U},
+  {5U, 1U, 0U},  {6U, 1U, 1U},  {7U, 1U, 2U},  {8U, 1U, 3U},  {9U, 1U, 4U},
+  {10U, 2U, 0U}, {11U, 2U, 1U}, {12U, 2U, 2U}, {13U, 2U, 3U}, {14U, 2U, 4U},
+  {15U, 3U, 0U}, {16U, 3U, 1U}, {17U, 3U, 2U}, {18U, 3U, 3U}, {19U, 3U, 4U},
+  {20U, 4U, 0U}, {21U, 4U, 1U}, {22U, 4U, 2U}, {23U, 4U, 3U}, {24U, 4U, 4U}
+};
+
+const ads1220_route_t *board_topology_get_route(uint8_t device_id)
+{
+  if (device_id >= ADC_DEVICE_COUNT)
+  {
+    return 0;
+  }
+
+  return &g_ads1220_routes[device_id];
+}
+
+uint8_t board_topology_pixel_id(uint8_t device_id, uint8_t channel_id)
+{
+  if ((device_id >= ADC_DEVICE_COUNT) || (channel_id >= ADC_CHANNELS_PER_DEVICE))
+  {
+    return 0xFFU;
+  }
+
+  return (uint8_t)((device_id * ADC_CHANNELS_PER_DEVICE) + channel_id);
+}
+
+bool board_topology_get_pixel_route(uint16_t pixel_id, board_pixel_route_t *route)
 {
   uint16_t pixel_in_subboard;
 

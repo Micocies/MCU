@@ -33,5 +33,5 @@ uint16_t pixel_map_make_id(uint8_t row, uint8_t column)
  */
 bool pixel_map_get_entry(uint16_t pixel_id, pixel_map_entry_t *entry)
 {
-  return board_topology_get_route(pixel_id, entry);
+  return board_topology_get_pixel_route(pixel_id, entry);
 }
