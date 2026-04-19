@@ -69,6 +69,17 @@ When the scheduler selects a new device/channel it requests the app to clear sta
 
 Owns the USB/output tick and scheduler/service tick. It keeps the 100-pixel buffer and uses the existing `frame_builder` and `usb_stream` path to send the unchanged external frame format.
 
+Power-on initialization does not perform a 25-device SPI bring-up loop. `APP_STATE_INIT` only performs shared hardware actions and software table setup:
+
+- `adc_bus_reset_all()`
+- `adc_bus_start_all_pulse()`
+- `ads1220_device_table_init()`
+- `ads1220_scheduler_start()`
+
+`ads1220_device_table_init()` initializes the 25 software objects, routes, and per-device `expected_config` mirrors. It does not select each ADS1220 or write registers over SPI.
+
+Actual SPI configuration is runtime polling work. When the scheduler reaches a specific `device_id/channel_id`, it selects that route, enters `ENSURE_CONFIG`, calls `ads1220_device_configure_channel()`, and only then writes the ADS1220 registers through `adc_protocol_configure()`. In other words, the current implementation configures the device/channel being serviced now; it does not preconfigure all 25 devices at boot.
+
 Scheduler errors are routed back through the existing diagnostic and recovery policy:
 
 - DRDY timeout enters `APP_STATE_RECOVER` and uses ADC reconfigure recovery.
